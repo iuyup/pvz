@@ -35,6 +35,8 @@ ASSET_FILES = {
     "cherry_bomb_warn": "cherry_bomb_warn.png",
     "explosion": "explosion.png",
     "zombie": "zombie_cut.png",
+    "cone_accessory": "cone_accessory.png",
+    "bucket_accessory": "bucket_accessory.png",
     "shovel": "shovel_cut.png",
     "sun": "sun_cut.png",
 }
@@ -111,10 +113,15 @@ SUN_MAX_Y = STATUS_H + GRID_H - SUN_CLICK_RADIUS
 
 # Zombie
 ZOMBIE_HP = 100
+ZOMBIE_CONEHEAD_ARMOR = 180
+ZOMBIE_BUCKETHEAD_ARMOR = 550
 ZOMBIE_ATTACK_CD = 1.0
 ZOMBIE_ATTACK_DMG = 20
 ZOMBIE_WIDTH = 46
 ZOMBIE_HEIGHT = 62
+ZOMBIE_IMAGE_MAX_W = 58
+ZOMBIE_IMAGE_MAX_H = CELL_SIZE - 4
+ACCESSORY_ASSET_KEYS = {"cone_accessory", "bucket_accessory"}
 
 # Wave system
 TOTAL_WAVES = 5
@@ -125,6 +132,19 @@ SPEED_W1 = 20.0
 SPEED_W5 = 35.0
 ZOMBIES_PER_WAVE_BASE = 3
 ZOMBIES_PER_WAVE_INC = 2
+ZOMBIE_SPAWN_TABLE = {
+    1: (("normal", None, 1.0),),
+    2: (("normal", None, 0.75), ("normal", "cone", 0.25)),
+    3: (("normal", None, 0.55), ("normal", "cone", 0.35), ("normal", "bucket", 0.10)),
+    4: (("normal", None, 0.40), ("normal", "cone", 0.40), ("normal", "bucket", 0.20)),
+    5: (("normal", None, 0.30), ("normal", "cone", 0.40), ("normal", "bucket", 0.30)),
+}
+ZOMBIE_WAVE_GUARANTEED_ACCESSORIES = {
+    2: ("cone",),
+    3: ("cone", "bucket"),
+    4: ("cone", "bucket"),
+    5: ("cone", "bucket"),
+}
 
 DIFFICULTY_CONFIG = {
     "easy": {
@@ -262,6 +282,9 @@ class CherryBomb(Plant):
                 continue
             zombie_center_col = int((zombie.x + zombie.width / 2) // CELL_SIZE)
             if min_col <= zombie_center_col <= max_col:
+                zombie.accessory_hp = 0
+                zombie.accessory_key = None
+                zombie.accessory_asset_key = None
                 zombie.hp = 0
 
     def draw(self, screen, images=None):
@@ -331,19 +354,36 @@ PLANT_REGISTRY = {
 # --------------------
 
 class Zombie:
-    def __init__(self, row, speed, hp=ZOMBIE_HP, width=ZOMBIE_WIDTH, height=ZOMBIE_HEIGHT, asset_key="zombie"):
+    def __init__(self, row, speed, hp=ZOMBIE_HP, width=ZOMBIE_WIDTH, height=ZOMBIE_HEIGHT, asset_key="zombie", accessory_key=None, accessory_hp=0, accessory_asset_key=None):
         self.row = row
         self.width = width
         self.height = height
         self.asset_key = asset_key
+        self.accessory_key = accessory_key
+        self.accessory_asset_key = accessory_asset_key
         self.x = float(GRID_W) - self.width
         self.hp = hp
         self.max_hp = hp
+        self.accessory_hp = accessory_hp
+        self.max_accessory_hp = accessory_hp
+        self.max_total_hp = hp + accessory_hp
         self.speed = speed
         self.attack_timer = 0.0
     def take_damage(self, amount):
+        if self.accessory_hp > 0:
+            self.accessory_hp = max(0, self.accessory_hp - amount)
+            if self.accessory_hp <= 0:
+                self.accessory_key = None
+                self.accessory_asset_key = None
+            return self.hp <= 0
         self.hp -= amount
         return self.hp <= 0
+    def current_asset_key(self):
+        return self.asset_key
+    def current_accessory_asset_key(self):
+        if self.accessory_hp > 0:
+            return self.accessory_asset_key
+        return None
     def _get_blocker(self, game):
         return game.get_zombie_blocker(self.row, self.x)
     def update(self, dt, game):
@@ -377,12 +417,22 @@ class Zombie:
             tx = int(self.x) + (self.width - txt.get_width())//2
             ty = y + self.height//2 - 2
             screen.blit(txt, (tx, ty))
+        self.draw_health(screen)
+    def draw_health(self, screen):
+        y = STATUS_H + self.row * CELL_SIZE + (CELL_SIZE-self.height)//2
         bw = self.width; bh = 5
         by = y - 7
         pygame.draw.rect(screen, HP_BAR_BG, (int(self.x), by, bw, bh))
-        r = max(0, self.hp/self.max_hp)
+        total_hp = max(0, self.hp) + max(0, self.accessory_hp)
+        r = max(0, total_hp/self.max_total_hp)
         hc = HP_BAR_GREEN if r > 0.3 else HP_BAR_RED
         pygame.draw.rect(screen, hc, (int(self.x), by, int(bw*r), bh))
+    def draw_accessory(self, screen, base_image, accessory_image, offset):
+        if base_image is None or accessory_image is None:
+            return
+        bx = int(self.x) + (self.width - base_image.get_width()) // 2
+        by = STATUS_H + self.row * CELL_SIZE + (CELL_SIZE - base_image.get_height()) // 2
+        screen.blit(accessory_image, (bx + offset[0], by + offset[1]))
 
 ZOMBIE_REGISTRY = {
     "normal": {
@@ -392,6 +442,23 @@ ZOMBIE_REGISTRY = {
         "width": ZOMBIE_WIDTH,
         "height": ZOMBIE_HEIGHT,
         "asset_key": "zombie",
+    },
+}
+
+ACCESSORY_REGISTRY = {
+    "cone": {
+        "name": "Traffic Cone",
+        "hp": ZOMBIE_CONEHEAD_ARMOR,
+        "asset_key": "cone_accessory",
+        "max_size": (32, 36),
+        "offset": (3, -18),
+    },
+    "bucket": {
+        "name": "Bucket",
+        "hp": ZOMBIE_BUCKETHEAD_ARMOR,
+        "asset_key": "bucket_accessory",
+        "max_size": (34, 30),
+        "offset": (2, -11),
     },
 }
 
@@ -442,6 +509,7 @@ class WaveManager:
         self.current_wave = 0
         self.zombies_spawned = 0
         self.zombies_in_wave = 0
+        self.spawn_plan = []
         self.spawn_timer = 0.0
         self.wave_timer = 0.0
         self.in_wave = False
@@ -461,10 +529,29 @@ class WaveManager:
     def _zombies_in_wave(self, game):
         base_count = ZOMBIES_PER_WAVE_BASE + (self.current_wave - 1) * ZOMBIES_PER_WAVE_INC
         return max(1, int(round(base_count * game.difficulty_config["zombie_count_multiplier"])))
+    def _spawn_choice(self):
+        table = ZOMBIE_SPAWN_TABLE.get(self.current_wave, ZOMBIE_SPAWN_TABLE[max(ZOMBIE_SPAWN_TABLE)])
+        roll = random.random() * sum(weight for _, _, weight in table)
+        upto = 0.0
+        for zombie_key, accessory_key, weight in table:
+            upto += weight
+            if roll <= upto:
+                return zombie_key, accessory_key
+        return table[-1][0], table[-1][1]
+    def _build_spawn_plan(self):
+        plan = [
+            ("normal", accessory_key)
+            for accessory_key in ZOMBIE_WAVE_GUARANTEED_ACCESSORIES.get(self.current_wave, ())
+        ][:self.zombies_in_wave]
+        while len(plan) < self.zombies_in_wave:
+            plan.append(self._spawn_choice())
+        random.shuffle(plan)
+        return plan
     def _start_wave(self, game):
         self.current_wave += 1
         self.zombies_spawned = 0
         self.zombies_in_wave = self._zombies_in_wave(game)
+        self.spawn_plan = self._build_spawn_plan()
         self.spawn_timer = 0.0
         self.in_wave = True
     def try_spawn(self, dt, game):
@@ -487,9 +574,13 @@ class WaveManager:
         interval = self._spawn_interval()
         if self.spawn_timer >= interval:
             self.spawn_timer -= interval
-            self.zombies_spawned += 1
             row = random.randint(0, GRID_ROWS - 1)
-            game.spawn_zombie(row, self._zombie_speed())
+            if self.zombies_spawned < len(self.spawn_plan):
+                zombie_key, accessory_key = self.spawn_plan[self.zombies_spawned]
+            else:
+                zombie_key, accessory_key = self._spawn_choice()
+            self.zombies_spawned += 1
+            game.spawn_zombie(row, self._zombie_speed(), zombie_key, accessory_key)
 
 # ============ GAME ============
 
@@ -508,8 +599,59 @@ class Game:
         size = (max(1, int(width * scale)), max(1, int(height * scale)))
         return pygame.transform.smoothscale(image, size)
 
+    def _trim_alpha(self, image):
+        bbox = image.get_bounding_rect(min_alpha=8)
+        if bbox.width <= 0 or bbox.height <= 0:
+            return image
+        return image.subsurface(bbox).copy()
+
+    def _is_edge_background_pixel(self, color):
+        r, g, b, a = color
+        if a < 8:
+            return True
+        spread = max(r, g, b) - min(r, g, b)
+        bright_neutral = (r + g + b) / 3 > 205 and spread < 75
+        beige_shadow = r > 120 and g > 95 and b > 65 and r >= g >= b and spread < 95
+        return bright_neutral or beige_shadow
+
+    def _remove_edge_background(self, image):
+        result = image.copy()
+        width, height = result.get_size()
+        bbox = result.get_bounding_rect(min_alpha=8)
+        if bbox.width <= 0 or bbox.height <= 0:
+            return result
+
+        seeds = []
+        for x in range(bbox.left, bbox.right):
+            seeds.append((x, bbox.top))
+            seeds.append((x, bbox.bottom - 1))
+        for y in range(bbox.top, bbox.bottom):
+            seeds.append((bbox.left, y))
+            seeds.append((bbox.right - 1, y))
+
+        queue = []
+        visited = set()
+        for point in seeds:
+            if point in visited:
+                continue
+            visited.add(point)
+            if self._is_edge_background_pixel(result.get_at(point)):
+                queue.append(point)
+
+        while queue:
+            x, y = queue.pop()
+            result.set_at((x, y), (0, 0, 0, 0))
+            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                if nx < 0 or ny < 0 or nx >= width or ny >= height or (nx, ny) in visited:
+                    continue
+                visited.add((nx, ny))
+                if self._is_edge_background_pixel(result.get_at((nx, ny))):
+                    queue.append((nx, ny))
+        return result
+
     def _load_images(self):
         images = {}
+        raw_images = {}
         for key, filename in ASSET_FILES.items():
             path = os.path.join(ASSET_DIR, filename)
             if not os.path.exists(path):
@@ -520,11 +662,27 @@ class Game:
                 continue
             if key in FLIPPED_ASSETS:
                 raw = pygame.transform.flip(raw, True, False)
+            if key in ACCESSORY_ASSET_KEYS:
+                raw = self._remove_edge_background(raw)
+                raw = self._trim_alpha(raw)
+            raw_images[key] = raw
+
+        accessory_sizes = {
+            data["asset_key"]: data["max_size"]
+            for data in ACCESSORY_REGISTRY.values()
+        }
+
+        for key, raw in raw_images.items():
+            zombie_image = self._fit_image(raw, ZOMBIE_IMAGE_MAX_W, ZOMBIE_IMAGE_MAX_H)
+            accessory_image = None
+            if key in accessory_sizes:
+                accessory_image = self._fit_image(raw, *accessory_sizes[key])
             images[key] = {
                 "grid": self._fit_image(raw, CELL_SIZE - 6, CELL_SIZE - 6),
                 "card": self._fit_image(raw, 42, 36),
                 "button": self._fit_image(raw, 44, 38),
-                "zombie": self._fit_image(raw, 58, CELL_SIZE - 4),
+                "zombie": zombie_image,
+                "accessory": accessory_image,
                 "explosion": pygame.transform.smoothscale(raw, (CELL_SIZE * 3, CELL_SIZE * 3)),
                 "sun": self._fit_image(raw, 48, 48),
                 "status": self._fit_image(raw, 30, 30),
@@ -576,10 +734,17 @@ class Game:
     def add_pea(self, row, x, damage=PEA_DAMAGE):
         self.peas.append(Pea(row, x, damage))
 
-    def spawn_zombie(self, row, speed, zombie_key="normal"):
+    def spawn_zombie(self, row, speed, zombie_key="normal", accessory_key=None):
         zombie_data = ZOMBIE_REGISTRY[zombie_key]
         zombie_class = zombie_data["class"]
-        hp = max(1, int(round(zombie_data["hp"] * self.difficulty_config["zombie_hp_multiplier"])))
+        hp_multiplier = self.difficulty_config["zombie_hp_multiplier"]
+        hp = max(1, int(round(zombie_data["hp"] * hp_multiplier)))
+        accessory_data = None if accessory_key is None else ACCESSORY_REGISTRY[accessory_key]
+        accessory_hp = 0
+        accessory_asset_key = None
+        if accessory_data is not None:
+            accessory_hp = max(1, int(round(accessory_data["hp"] * hp_multiplier)))
+            accessory_asset_key = accessory_data["asset_key"]
         self.zombies.append(zombie_class(
             row,
             speed,
@@ -587,6 +752,9 @@ class Game:
             width=zombie_data["width"],
             height=zombie_data["height"],
             asset_key=zombie_data["asset_key"],
+            accessory_key=accessory_key,
+            accessory_hp=accessory_hp,
+            accessory_asset_key=accessory_asset_key,
         ))
 
     def has_zombies(self):
@@ -762,7 +930,7 @@ class Game:
         for pea in self.peas:
             for z in self.zombies:
                 if pea.row == z.row and z.hp > 0 and z.x <= pea.x <= z.x+z.width:
-                    z.hp -= pea.damage; hit.append(pea); break
+                    z.take_damage(pea.damage); hit.append(pea); break
         for p in hit:
             if p in self.peas: self.peas.remove(p)
         killed = sum(1 for z in self.zombies if z.hp <= 0)
@@ -990,7 +1158,15 @@ class Game:
                             p.draw(screen, self.images)
                     else:
                         p.draw(screen, self.images.get(p.asset_key, {}).get("grid"))
-        for z in self.zombies: z.draw(screen, self.images.get(z.asset_key, {}).get("zombie"))
+        for z in self.zombies:
+            base_image = self.images.get(z.current_asset_key(), {}).get("zombie")
+            z.draw(screen, base_image)
+            accessory_asset_key = z.current_accessory_asset_key()
+            if accessory_asset_key is not None and z.accessory_key is not None:
+                accessory_image = self.images.get(accessory_asset_key, {}).get("accessory")
+                accessory_offset = ACCESSORY_REGISTRY[z.accessory_key]["offset"]
+                z.draw_accessory(screen, base_image, accessory_image, accessory_offset)
+                z.draw_health(screen)
         for p in exploding_plants: p.draw(screen, self.images)
         for pea in self.peas: pea.draw(screen)
         for s in self.suns: s.draw(screen, self.images.get("sun", {}).get("sun"))
