@@ -30,6 +30,9 @@ ASSET_FILES = {
     "sunflower": "sunflower_cut.png",
     "peashooter": "peashooter_right_cut.png",
     "wallnut": "wallnut_cut.png",
+    "cherry_bomb": "cherry_bomb_cut.png",
+    "cherry_bomb_warn": "cherry_bomb_warn.png",
+    "explosion": "explosion.png",
     "zombie": "zombie_cut.png",
     "shovel": "shovel_cut.png",
     "sun": "sun_cut.png",
@@ -48,6 +51,7 @@ CARD_BG = (40, 35, 30)
 SUNFLOWER_COLOR = (255, 230, 40)
 PEASHOOTER_COLOR = (70, 210, 55)
 WALLNUT_COLOR = (165, 115, 55)
+CHERRY_BOMB_COLOR = (230, 45, 35)
 ZOMBIE_COLOR = (145, 130, 110)
 ZOMBIE_EYE = (220, 40, 40)
 PEA_COLOR = (50, 230, 50)
@@ -71,11 +75,13 @@ SHOVEL_HANDLE = (120, 75, 35)
 COST_SUNFLOWER = 50
 COST_PEASHOOTER = 100
 COST_WALLNUT = 50
+COST_CHERRY_BOMB = 150
 
 # Plant HP
 HP_SUNFLOWER = 100
 HP_PEASHOOTER = 100
 HP_WALLNUT = 400
+HP_CHERRY_BOMB = 9999
 
 # Plant timings
 SUNFLOWER_INTERVAL = 10.0
@@ -83,6 +89,11 @@ PEASHOOTER_INTERVAL = 1.5
 COOLDOWN_SUNFLOWER = 7.5
 COOLDOWN_PEASHOOTER = 7.5
 COOLDOWN_WALLNUT = 30.0
+COOLDOWN_CHERRY_BOMB = 50.0
+CHERRY_BOMB_IDLE_TIME = 1.2
+CHERRY_BOMB_WARNING_TIME = 0.3
+CHERRY_BOMB_EXPLODING_TIME = 0.5
+CHERRY_BOMB_RADIUS_CELLS = 1
 
 # Pea
 PEA_DAMAGE = 20
@@ -187,6 +198,69 @@ class Wallnut(Plant):
     def __init__(self, row, col):
         super().__init__(row, col, HP_WALLNUT, COST_WALLNUT, WALLNUT_COLOR, "W", "wallnut")
 
+class CherryBomb(Plant):
+    def __init__(self, row, col):
+        super().__init__(row, col, HP_CHERRY_BOMB, COST_CHERRY_BOMB, CHERRY_BOMB_COLOR, "C", "cherry_bomb")
+        self.state = "idle"
+        self.state_timer = CHERRY_BOMB_IDLE_TIME
+        self._damage_dealt = False
+
+    def update(self, dt, game):
+        self.state_timer -= dt
+        while self.state_timer <= 0.0:
+            overflow = -self.state_timer
+            if self.state == "idle":
+                self.state = "warning"
+                self.state_timer = CHERRY_BOMB_WARNING_TIME - overflow
+            elif self.state == "warning":
+                self._enter_exploding(game)
+                self.state_timer = CHERRY_BOMB_EXPLODING_TIME - overflow
+            elif self.state == "exploding":
+                game.remove_plant(self.row, self.col)
+                return
+            else:
+                return
+
+    def take_damage(self, amount):
+        return False
+
+    def _enter_exploding(self, game):
+        self.state = "exploding"
+        if self._damage_dealt:
+            return
+        self._damage_dealt = True
+        game.shake_time = 0.2
+        game.shake_intensity = 5
+        min_row = max(0, self.row - CHERRY_BOMB_RADIUS_CELLS)
+        max_row = min(GRID_ROWS - 1, self.row + CHERRY_BOMB_RADIUS_CELLS)
+        min_col = max(0, self.col - CHERRY_BOMB_RADIUS_CELLS)
+        max_col = min(GRID_COLS - 1, self.col + CHERRY_BOMB_RADIUS_CELLS)
+        for zombie in game.zombies:
+            if zombie.hp <= 0 or not (min_row <= zombie.row <= max_row):
+                continue
+            zombie_center_col = int((zombie.x + zombie.width / 2) // CELL_SIZE)
+            if min_col <= zombie_center_col <= max_col:
+                zombie.hp = 0
+
+    def draw(self, screen, images=None):
+        center = (
+            self.col * CELL_SIZE + CELL_SIZE // 2,
+            STATUS_H + self.row * CELL_SIZE + CELL_SIZE // 2,
+        )
+        if self.state == "exploding":
+            image = None if images is None else images.get("explosion", {}).get("explosion")
+            if image is not None:
+                screen.blit(image, (center[0] - image.get_width() // 2, center[1] - image.get_height() // 2))
+            else:
+                rect = pygame.Rect(0, 0, CELL_SIZE * 3, CELL_SIZE * 3)
+                rect.center = center
+                pygame.draw.ellipse(screen, (255, 120, 20), rect)
+                pygame.draw.ellipse(screen, (255, 235, 80), rect.inflate(-60, -60))
+            return
+        image_key = "cherry_bomb_warn" if self.state == "warning" else "cherry_bomb"
+        image = None if images is None else images.get(image_key, {}).get("grid")
+        super().draw(screen, image)
+
 PLANT_REGISTRY = {
     "sunflower": {
         "name": "Sunflower",
@@ -217,6 +291,18 @@ PLANT_REGISTRY = {
         "class": Wallnut,
         "cooldown": COOLDOWN_WALLNUT,
         "initial_cooldown": 0.0,
+    },
+    "cherry_bomb": {
+        "name": "Cherry Bomb",
+        "cost": COST_CHERRY_BOMB,
+        "hp": HP_CHERRY_BOMB,
+        "color": CHERRY_BOMB_COLOR,
+        "letter": "C",
+        "asset_key": "cherry_bomb",
+        "class": CherryBomb,
+        "recharge": COOLDOWN_CHERRY_BOMB,
+        "initial_cooldown": 0.0,
+        "is_consumable": True,
     },
 }
 
@@ -410,6 +496,7 @@ class Game:
                 "card": self._fit_image(raw, 42, 36),
                 "button": self._fit_image(raw, 44, 38),
                 "zombie": self._fit_image(raw, 58, CELL_SIZE - 4),
+                "explosion": pygame.transform.smoothscale(raw, (CELL_SIZE * 3, CELL_SIZE * 3)),
                 "sun": self._fit_image(raw, 48, 48),
                 "status": self._fit_image(raw, 30, 30),
             }
@@ -433,6 +520,8 @@ class Game:
         self.kills = 0
         self.wave_manager = WaveManager()
         self.sky_sun_timer = 0.0
+        self.shake_time = 0.0
+        self.shake_intensity = 0
 
     def start_game(self):
         self._reset_game()
@@ -497,12 +586,15 @@ class Game:
         return min(1.0, (self.wave_manager.current_wave + cooldown) / TOTAL_WAVES)
 
     def _card_cooldown_progress(self, key):
-        plant_data = PLANT_REGISTRY[key]
-        duration = plant_data.get("cooldown", 0.0)
+        duration = self._card_recharge_duration(key)
         if duration <= 0.0:
             return 1.0
         remaining = self.card_cooldowns.get(key, 0.0)
         return max(0.0, min(1.0, 1.0 - remaining / duration))
+
+    def _card_recharge_duration(self, key):
+        plant_data = PLANT_REGISTRY[key]
+        return plant_data.get("recharge", plant_data.get("cooldown", 0.0))
 
     def _card_ready(self, key):
         plant_data = PLANT_REGISTRY[key]
@@ -586,7 +678,7 @@ class Game:
             if self.sun_count < cost: return False
             self.sun_count -= cost
             self.grid[row][col] = plant_data["class"](row, col)
-            self.card_cooldowns[self.selected_card] = float(plant_data.get("cooldown", 0.0))
+            self.card_cooldowns[self.selected_card] = float(self._card_recharge_duration(self.selected_card))
             self.selected_card = None
             return True
         return False
@@ -605,6 +697,7 @@ class Game:
         for key in self.CARD_KEYS:
             self.card_cooldowns[key] = max(0.0, self.card_cooldowns.get(key, 0.0) - dt)
             self.card_shake[key] = max(0.0, self.card_shake.get(key, 0.0) - dt)
+        self.shake_time = max(0.0, self.shake_time - dt)
         self.wave_manager.try_spawn(dt, self)
         # Sky sun
         self.sky_sun_timer += dt
@@ -765,6 +858,16 @@ class Game:
         self._draw_text_center(screen, hint_font, "ESC to continue", (200, 200, 200), (SCREEN_W//2, SCREEN_H//2 + 115))
 
     def _draw_playing(self, screen):
+        output_screen = screen
+        if self.shake_time > 0.0 and self.shake_intensity > 0:
+            shake_amount = int(self.shake_intensity)
+            shake_offset = (
+                random.randint(-shake_amount, shake_amount),
+                random.randint(-shake_amount, shake_amount),
+            )
+            screen = pygame.Surface((SCREEN_W, SCREEN_H))
+        else:
+            shake_offset = (0, 0)
         screen.fill(BG_COLOR)
         # Grid
         for row in range(GRID_ROWS):
@@ -784,9 +887,8 @@ class Game:
         panel_color = (38, 38, 38)
         panel_border = (82, 82, 82)
         sun_panel = pygame.Rect(16, 9, 130, 42)
-        wave_panel = pygame.Rect(170, 9, 150, 42)
-        kill_panel = pygame.Rect(344, 9, 140, 42)
-        for panel in (sun_panel, wave_panel, kill_panel):
+        kill_panel = pygame.Rect(170, 9, 140, 42)
+        for panel in (sun_panel, kill_panel):
             pygame.draw.rect(screen, panel_color, panel, border_radius=8)
             pygame.draw.rect(screen, panel_border, panel, 1, border_radius=8)
         status_sun = self.images.get("sun", {}).get("status")
@@ -798,8 +900,6 @@ class Game:
         font = pygame.font.Font(None, 28)
         txt = font.render(str(self.sun_count), True, TEXT_COLOR)
         screen.blit(txt, (66, 19))
-        txt = font.render(f"Wave: {self.wave_manager.current_wave}/{TOTAL_WAVES}", True, TEXT_COLOR)
-        screen.blit(txt, txt.get_rect(center=wave_panel.center))
         txt = font.render(f"Kills: {self.kills}", True, TEXT_COLOR)
         screen.blit(txt, txt.get_rect(center=kill_panel.center))
         self._draw_wave_progress(screen, pygame.Rect(512, 23, 270, 14))
@@ -826,12 +926,20 @@ class Game:
             pygame.draw.polygon(screen, SHOVEL_METAL, blade)
             pygame.draw.polygon(screen, (90, 90, 90), blade, 2)
         # Plants / Zombies / Peas / Suns
+        exploding_plants = []
         for row in range(GRID_ROWS):
             for col in range(GRID_COLS):
                 p = self.grid[row][col]
                 if p is not None:
-                    p.draw(screen, self.images.get(p.asset_key, {}).get("grid"))
+                    if isinstance(p, CherryBomb):
+                        if p.state == "exploding":
+                            exploding_plants.append(p)
+                        else:
+                            p.draw(screen, self.images)
+                    else:
+                        p.draw(screen, self.images.get(p.asset_key, {}).get("grid"))
         for z in self.zombies: z.draw(screen, self.images.get(z.asset_key, {}).get("zombie"))
+        for p in exploding_plants: p.draw(screen, self.images)
         for pea in self.peas: pea.draw(screen)
         for s in self.suns: s.draw(screen, self.images.get("sun", {}).get("sun"))
         # Card bar
@@ -894,6 +1002,9 @@ class Game:
             elif self.shovel_selected:
                 image = self.images.get("shovel", {}).get("button")
                 self._draw_follow_shadow(screen, image, (mx, my), SHOVEL_METAL, 1.75)
+        if screen is not output_screen:
+            output_screen.fill(BG_COLOR)
+            output_screen.blit(screen, shake_offset)
     def _draw_gameover(self, screen, mouse_pos, mouse_pressed):
         self._draw_playing(screen)
         if self.state == STATE_WIN:
