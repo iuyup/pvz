@@ -21,6 +21,7 @@ CARD_SHAKE_DURATION = 0.2
 CARD_SHAKE_AMPLITUDE = 4
 
 STATE_MENU = "menu"
+STATE_DIFFICULTY_SELECT = "difficulty_select"
 STATE_PLAYING = "playing"
 STATE_PAUSED = "paused"
 STATE_WIN = "win"
@@ -124,6 +125,27 @@ SPEED_W1 = 20.0
 SPEED_W5 = 35.0
 ZOMBIES_PER_WAVE_BASE = 3
 ZOMBIES_PER_WAVE_INC = 2
+
+DIFFICULTY_CONFIG = {
+    "easy": {
+        "name": "Easy",
+        "zombie_count_multiplier": 0.75,
+        "wave_cooldown_multiplier": 1.25,
+        "zombie_hp_multiplier": 0.8,
+    },
+    "normal": {
+        "name": "Normal",
+        "zombie_count_multiplier": 1.0,
+        "wave_cooldown_multiplier": 1.0,
+        "zombie_hp_multiplier": 1.0,
+    },
+    "hard": {
+        "name": "Hard",
+        "zombie_count_multiplier": 1.35,
+        "wave_cooldown_multiplier": 0.7,
+        "zombie_hp_multiplier": 1.5,
+    },
+}
 
 # ============ ENTITIES ============
 
@@ -434,10 +456,15 @@ class WaveManager:
         if TOTAL_WAVES <= 1: return SPEED_W1
         t = (self.current_wave - 1) / (TOTAL_WAVES - 1)
         return self._lerp(SPEED_W1, SPEED_W5, t)
-    def _start_wave(self):
+    def _wave_cooldown(self, game):
+        return WAVE_COOLDOWN * game.difficulty_config["wave_cooldown_multiplier"]
+    def _zombies_in_wave(self, game):
+        base_count = ZOMBIES_PER_WAVE_BASE + (self.current_wave - 1) * ZOMBIES_PER_WAVE_INC
+        return max(1, int(round(base_count * game.difficulty_config["zombie_count_multiplier"])))
+    def _start_wave(self, game):
         self.current_wave += 1
         self.zombies_spawned = 0
-        self.zombies_in_wave = ZOMBIES_PER_WAVE_BASE + (self.current_wave - 1) * ZOMBIES_PER_WAVE_INC
+        self.zombies_in_wave = self._zombies_in_wave(game)
         self.spawn_timer = 0.0
         self.in_wave = True
     def try_spawn(self, dt, game):
@@ -445,8 +472,8 @@ class WaveManager:
             return
         if not self.in_wave:
             self.wave_timer += dt
-            if self.wave_timer >= WAVE_COOLDOWN:
-                self._start_wave()
+            if self.wave_timer >= self._wave_cooldown(game):
+                self._start_wave(game)
             return
         if self.zombies_spawned >= self.zombies_in_wave:
             if not game.has_zombies():
@@ -470,6 +497,8 @@ class Game:
     CARD_KEYS = tuple(PLANT_REGISTRY.keys())
     def __init__(self):
         self.images = self._load_images()
+        self.difficulty_key = "normal"
+        self.difficulty_config = DIFFICULTY_CONFIG[self.difficulty_key]
         self.state = STATE_MENU
         self._reset_game()
 
@@ -523,7 +552,9 @@ class Game:
         self.shake_time = 0.0
         self.shake_intensity = 0
 
-    def start_game(self):
+    def start_game(self, difficulty_key="normal"):
+        self.difficulty_key = difficulty_key if difficulty_key in DIFFICULTY_CONFIG else "normal"
+        self.difficulty_config = DIFFICULTY_CONFIG[self.difficulty_key]
         self._reset_game()
         self.state = STATE_PLAYING
 
@@ -548,10 +579,11 @@ class Game:
     def spawn_zombie(self, row, speed, zombie_key="normal"):
         zombie_data = ZOMBIE_REGISTRY[zombie_key]
         zombie_class = zombie_data["class"]
+        hp = max(1, int(round(zombie_data["hp"] * self.difficulty_config["zombie_hp_multiplier"])))
         self.zombies.append(zombie_class(
             row,
             speed,
-            hp=zombie_data["hp"],
+            hp=hp,
             width=zombie_data["width"],
             height=zombie_data["height"],
             asset_key=zombie_data["asset_key"],
@@ -582,7 +614,8 @@ class Game:
             return 1.0
         if self.wave_manager.in_wave:
             return min(1.0, self.wave_manager.current_wave / TOTAL_WAVES)
-        cooldown = min(1.0, self.wave_manager.wave_timer / WAVE_COOLDOWN)
+        wave_cooldown = self.wave_manager._wave_cooldown(self)
+        cooldown = min(1.0, self.wave_manager.wave_timer / wave_cooldown)
         return min(1.0, (self.wave_manager.current_wave + cooldown) / TOTAL_WAVES)
 
     def _card_cooldown_progress(self, key):
@@ -834,12 +867,31 @@ class Game:
         self._draw_text_center(screen, subtitle_font, "Training Demo", (210, 210, 210), (SCREEN_W//2, 215))
         button = pygame.Rect((SCREEN_W - 240)//2, 270, 240, 72)
         if self._draw_button(screen, button, "开始游戏 / START", mouse_pos, mouse_pressed):
-            self.start_game()
+            self.state = STATE_DIFFICULTY_SELECT
         instruction = self._display_text(
             "鼠标点击卡片选择植物，再点击格子放置 · R 重开 · ESC 返回菜单",
             "Click cards to choose plants, place on grid | R restart | ESC menu",
         )
         self._draw_text_center(screen, instruction_font, instruction, (185, 185, 185), (SCREEN_W//2, 380))
+
+    def _draw_difficulty_select(self, screen, mouse_pos, mouse_pressed):
+        self._draw_grass_background(screen)
+        title_font = pygame.font.Font(None, 64)
+        subtitle_font = pygame.font.Font(None, 28)
+        self._draw_text_center(screen, title_font, "SELECT DIFFICULTY", TEXT_COLOR, (SCREEN_W//2, 120), True)
+        self._draw_text_center(screen, subtitle_font, "Choose your lawn pressure", (210, 210, 210), (SCREEN_W//2, 172))
+        button_w = 220
+        button_h = 62
+        start_y = 235
+        gap = 82
+        for i, key in enumerate(("easy", "normal", "hard")):
+            data = DIFFICULTY_CONFIG[key]
+            rect = pygame.Rect((SCREEN_W - button_w)//2, start_y + i * gap, button_w, button_h)
+            if self._draw_button(screen, rect, data["name"].upper(), mouse_pos, mouse_pressed):
+                self.start_game(key)
+        back_rect = pygame.Rect((SCREEN_W - 160)//2, start_y + 3 * gap + 10, 160, 46)
+        if self._draw_button(screen, back_rect, "BACK", mouse_pos, mouse_pressed):
+            self.state = STATE_MENU
 
     def _draw_paused(self, screen, mouse_pos, mouse_pressed):
         self._draw_playing(screen)
@@ -1048,6 +1100,8 @@ def main():
                     game.state = STATE_PAUSED
                 elif ev.key == pygame.K_ESCAPE and game.state == STATE_PAUSED:
                     game.state = STATE_PLAYING
+                elif ev.key == pygame.K_ESCAPE and game.state == STATE_DIFFICULTY_SELECT:
+                    game.state = STATE_MENU
                 elif ev.key == pygame.K_r and game.state in (STATE_WIN, STATE_LOSE):
                     game.restart_game()
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
@@ -1061,6 +1115,9 @@ def main():
         if game.state == STATE_MENU:
             game._update_menu(dt)
             game._draw_menu(screen, mouse_pos, mouse_pressed)
+        elif game.state == STATE_DIFFICULTY_SELECT:
+            game._update_menu(dt)
+            game._draw_difficulty_select(screen, mouse_pos, mouse_pressed)
         elif game.state == STATE_PLAYING:
             game._update_playing(dt)
             game._draw_playing(screen)
