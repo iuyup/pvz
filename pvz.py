@@ -645,6 +645,20 @@ class Game:
         screen.blit(rendered, rendered.get_rect(center=rect.center))
         return pressed
 
+    def _draw_follow_shadow(self, screen, image, center, fallback_color, scale=1.0):
+        if image is not None:
+            ghost = image.copy()
+            if scale != 1.0:
+                size = (
+                    max(1, int(ghost.get_width() * scale)),
+                    max(1, int(ghost.get_height() * scale)),
+                )
+                ghost = pygame.transform.smoothscale(ghost, size)
+            ghost.set_alpha(150)
+            screen.blit(ghost, (center[0] - ghost.get_width()//2, center[1] - ghost.get_height()//2))
+        else:
+            pygame.draw.circle(screen, (*fallback_color, 120), center, int(24 * scale))
+
     def _draw_menu(self, screen, mouse_pos, mouse_pressed):
         self._draw_grass_background(screen)
         title_font = pygame.font.Font(None, 72)
@@ -792,6 +806,16 @@ class Game:
                     s = pygame.Surface((CELL_SIZE,CELL_SIZE), pygame.SRCALPHA)
                     s.fill((255,255,255,50))
                     screen.blit(s, (gc*CELL_SIZE, STATUS_H+gr*CELL_SIZE))
+        if self.state == STATE_PLAYING:
+            mx, my = pygame.mouse.get_pos()
+            if self.selected_card is not None:
+                plant_data = PLANT_REGISTRY.get(self.selected_card)
+                if plant_data is not None:
+                    image = self.images.get(plant_data["asset_key"], {}).get("grid")
+                    self._draw_follow_shadow(screen, image, (mx, my), plant_data["color"])
+            elif self.shovel_selected:
+                image = self.images.get("shovel", {}).get("button")
+                self._draw_follow_shadow(screen, image, (mx, my), SHOVEL_METAL, 1.75)
     def _draw_gameover(self, screen, mouse_pos, mouse_pressed):
         self._draw_playing(screen)
         if self.state == STATE_WIN:
