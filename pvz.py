@@ -262,10 +262,10 @@ class Sun:
         else:
             pygame.draw.circle(screen, SUN_COLOR, (cx, cy), 22)
             pygame.draw.circle(screen, (255, 255, 200), (cx, cy), 15)
-        font = pygame.font.Font(None, 20)
-        txt = font.render(str(self.value), True, (160, 120, 0))
-        tx = cx - txt.get_width()//2; ty = cy - txt.get_height()//2
-        screen.blit(txt, (tx, ty))
+            font = pygame.font.Font(None, 20)
+            txt = font.render(str(self.value), True, (160, 120, 0))
+            tx = cx - txt.get_width()//2; ty = cy - txt.get_height()//2
+            screen.blit(txt, (tx, ty))
     def contains(self, mx, my):
         dx = self.x - mx; dy = self.y - my
         return dx*dx + dy*dy <= SUN_CLICK_RADIUS*SUN_CLICK_RADIUS
