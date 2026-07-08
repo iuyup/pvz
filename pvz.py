@@ -88,6 +88,7 @@ SUN_LIFETIME = 8.0
 SKY_SUN_INTERVAL = 8.0
 SUN_FALL_SPEED = 45.0
 SUN_CLICK_RADIUS = 30
+SUN_MAX_Y = STATUS_H + GRID_H - SUN_CLICK_RADIUS
 
 # Zombie
 ZOMBIE_HP = 100
@@ -179,14 +180,44 @@ class Wallnut(Plant):
     def __init__(self, row, col):
         super().__init__(row, col, HP_WALLNUT, COST_WALLNUT, WALLNUT_COLOR, "W", "wallnut")
 
+PLANT_REGISTRY = {
+    "sunflower": {
+        "name": "Sunflower",
+        "cost": COST_SUNFLOWER,
+        "color": SUNFLOWER_COLOR,
+        "letter": "S",
+        "asset_key": "sunflower",
+        "class": Sunflower,
+    },
+    "peashooter": {
+        "name": "Peashooter",
+        "cost": COST_PEASHOOTER,
+        "color": PEASHOOTER_COLOR,
+        "letter": "P",
+        "asset_key": "peashooter",
+        "class": Peashooter,
+    },
+    "wallnut": {
+        "name": "Wallnut",
+        "cost": COST_WALLNUT,
+        "color": WALLNUT_COLOR,
+        "letter": "W",
+        "asset_key": "wallnut",
+        "class": Wallnut,
+    },
+}
+
 # --------------------
 
 class Zombie:
-    def __init__(self, row, speed):
+    def __init__(self, row, speed, hp=ZOMBIE_HP, width=ZOMBIE_WIDTH, height=ZOMBIE_HEIGHT, asset_key="zombie"):
         self.row = row
-        self.x = float(GRID_W) - ZOMBIE_WIDTH
-        self.hp = ZOMBIE_HP
-        self.max_hp = ZOMBIE_HP
+        self.width = width
+        self.height = height
+        self.asset_key = asset_key
+        self.x = float(GRID_W) - self.width
+        self.hp = hp
+        self.max_hp = hp
         self.speed = speed
         self.attack_timer = 0.0
     def take_damage(self, amount):
@@ -206,31 +237,42 @@ class Zombie:
         else:
             self.attack_timer = 0.0
             self.x -= self.speed * dt
-            if self.x <= -ZOMBIE_WIDTH:
+            if self.x <= -self.width:
                 game.trigger_lost()
     def draw(self, screen, image=None):
-        y = STATUS_H + self.row * CELL_SIZE + (CELL_SIZE-ZOMBIE_HEIGHT)//2
+        y = STATUS_H + self.row * CELL_SIZE + (CELL_SIZE-self.height)//2
         if image is not None:
-            ix = int(self.x) + (ZOMBIE_WIDTH - image.get_width()) // 2
+            ix = int(self.x) + (self.width - image.get_width()) // 2
             iy = STATUS_H + self.row * CELL_SIZE + (CELL_SIZE - image.get_height()) // 2
             screen.blit(image, (ix, iy))
         else:
-            rect = pygame.Rect(int(self.x), y, ZOMBIE_WIDTH, ZOMBIE_HEIGHT)
+            rect = pygame.Rect(int(self.x), y, self.width, self.height)
             pygame.draw.rect(screen, ZOMBIE_COLOR, rect, border_radius=6)
             ey = y + 16
             pygame.draw.circle(screen, ZOMBIE_EYE, (int(self.x)+14, ey), 4)
             pygame.draw.circle(screen, ZOMBIE_EYE, (int(self.x)+32, ey), 4)
             font = pygame.font.Font(None, 26)
             txt = font.render("Z", True, (20, 20, 20))
-            tx = int(self.x) + (ZOMBIE_WIDTH - txt.get_width())//2
-            ty = y + ZOMBIE_HEIGHT//2 - 2
+            tx = int(self.x) + (self.width - txt.get_width())//2
+            ty = y + self.height//2 - 2
             screen.blit(txt, (tx, ty))
-        bw = ZOMBIE_WIDTH; bh = 5
+        bw = self.width; bh = 5
         by = y - 7
         pygame.draw.rect(screen, HP_BAR_BG, (int(self.x), by, bw, bh))
         r = max(0, self.hp/self.max_hp)
         hc = HP_BAR_GREEN if r > 0.3 else HP_BAR_RED
         pygame.draw.rect(screen, hc, (int(self.x), by, int(bw*r), bh))
+
+ZOMBIE_REGISTRY = {
+    "normal": {
+        "name": "Normal Zombie",
+        "class": Zombie,
+        "hp": ZOMBIE_HP,
+        "width": ZOMBIE_WIDTH,
+        "height": ZOMBIE_HEIGHT,
+        "asset_key": "zombie",
+    },
+}
 
 class Pea:
     def __init__(self, row, x, damage):
@@ -244,10 +286,12 @@ class Pea:
 
 class Sun:
     def __init__(self, x, y, value, lifetime):
-        self.x = x; self.y = y; self.value = value
+        self.x = max(SUN_CLICK_RADIUS, min(x, GRID_W - SUN_CLICK_RADIUS))
+        self.y = min(y, SUN_MAX_Y)
+        self.value = value
         self.lifetime = lifetime; self.age = 0.0
         self.dead = False
-        self.target_y = y + random.randint(40, 100)
+        self.target_y = min(self.y + random.randint(40, 100), SUN_MAX_Y)
     def update(self, dt):
         self.age += dt
         if self.age >= self.lifetime: self.dead = True; return
@@ -324,12 +368,7 @@ class WaveManager:
 # ============ GAME ============
 
 class Game:
-    CARD_KEYS = ["sunflower", "peashooter", "wallnut"]
-    CARD_NAMES = [
-        ("Sunflower", COST_SUNFLOWER, SUNFLOWER_COLOR, "S"),
-        ("Peashooter", COST_PEASHOOTER, PEASHOOTER_COLOR, "P"),
-        ("Wallnut", COST_WALLNUT, WALLNUT_COLOR, "W"),
-    ]
+    CARD_KEYS = tuple(PLANT_REGISTRY.keys())
     def __init__(self):
         self.images = self._load_images()
         self.state = STATE_MENU
@@ -397,8 +436,17 @@ class Game:
     def add_pea(self, row, x, damage=PEA_DAMAGE):
         self.peas.append(Pea(row, x, damage))
 
-    def spawn_zombie(self, row, speed):
-        self.zombies.append(Zombie(row, speed))
+    def spawn_zombie(self, row, speed, zombie_key="normal"):
+        zombie_data = ZOMBIE_REGISTRY[zombie_key]
+        zombie_class = zombie_data["class"]
+        self.zombies.append(zombie_class(
+            row,
+            speed,
+            hp=zombie_data["hp"],
+            width=zombie_data["width"],
+            height=zombie_data["height"],
+            asset_key=zombie_data["asset_key"],
+        ))
 
     def has_zombies(self):
         return len(self.zombies) > 0
@@ -470,9 +518,10 @@ class Game:
                 self.sun_count += sun.value; sun.dead = True; return True
         # 2. Card bar
         if my > SCREEN_H - CARD_H:
-            card_w = (SCREEN_W - 20)//3
+            card_gap = 5
+            card_w = (SCREEN_W - card_gap*(len(self.CARD_KEYS)+1))//len(self.CARD_KEYS)
             for i, key in enumerate(self.CARD_KEYS):
-                rx = 5 + i*(card_w+5)
+                rx = card_gap + i*(card_w+card_gap)
                 rect = pygame.Rect(rx, SCREEN_H-CARD_H+5, card_w, CARD_H-10)
                 if rect.collidepoint(mx, my):
                     self.selected_card = key if self.selected_card != key else None
@@ -493,13 +542,12 @@ class Game:
             if self.selected_card is None: return False
             if self.grid[row][col] is not None:
                 self.selected_card = None; return True
-            cost = {"sunflower":COST_SUNFLOWER,"peashooter":COST_PEASHOOTER,"wallnut":COST_WALLNUT}.get(self.selected_card,0)
+            plant_data = PLANT_REGISTRY.get(self.selected_card)
+            if plant_data is None: return False
+            cost = plant_data["cost"]
             if self.sun_count < cost: return False
             self.sun_count -= cost
-            k = self.selected_card
-            if k == "sunflower": self.grid[row][col] = Sunflower(row,col)
-            elif k == "peashooter": self.grid[row][col] = Peashooter(row,col)
-            elif k == "wallnut": self.grid[row][col] = Wallnut(row,col)
+            self.grid[row][col] = plant_data["class"](row, col)
             self.selected_card = None
             return True
         return False
@@ -539,7 +587,7 @@ class Game:
         hit = []
         for pea in self.peas:
             for z in self.zombies:
-                if pea.row == z.row and z.hp > 0 and z.x <= pea.x <= z.x+ZOMBIE_WIDTH:
+                if pea.row == z.row and z.hp > 0 and z.x <= pea.x <= z.x+z.width:
                     z.hp -= pea.damage; hit.append(pea); break
         for p in hit:
             if p in self.peas: self.peas.remove(p)
@@ -696,15 +744,22 @@ class Game:
                 p = self.grid[row][col]
                 if p is not None:
                     p.draw(screen, self.images.get(p.asset_key, {}).get("grid"))
-        for z in self.zombies: z.draw(screen, self.images.get("zombie", {}).get("zombie"))
+        for z in self.zombies: z.draw(screen, self.images.get(z.asset_key, {}).get("zombie"))
         for pea in self.peas: pea.draw(screen)
         for s in self.suns: s.draw(screen, self.images.get("sun", {}).get("sun"))
         # Card bar
         pygame.draw.rect(screen, CARD_BG, (0,SCREEN_H-CARD_H,SCREEN_W,CARD_H))
         pygame.draw.line(screen, (60,55,50), (0,SCREEN_H-CARD_H), (SCREEN_W,SCREEN_H-CARD_H), 2)
-        card_w = (SCREEN_W-20)//3
-        for i, (name, cost, color, letter) in enumerate(self.CARD_NAMES):
-            rx = 5 + i*(card_w+5); ry = SCREEN_H-CARD_H+6
+        card_gap = 5
+        card_w = (SCREEN_W-card_gap*(len(self.CARD_KEYS)+1))//len(self.CARD_KEYS)
+        for i, key in enumerate(self.CARD_KEYS):
+            plant_data = PLANT_REGISTRY[key]
+            name = plant_data["name"]
+            cost = plant_data["cost"]
+            color = plant_data["color"]
+            letter = plant_data["letter"]
+            asset_key = plant_data["asset_key"]
+            rx = card_gap + i*(card_w+card_gap); ry = SCREEN_H-CARD_H+6
             rect = pygame.Rect(rx, ry, card_w, CARD_H-12)
             affordable = self.sun_count >= cost
             dc = color if affordable else (color[0]//3,color[1]//3,color[2]//3)
@@ -714,7 +769,7 @@ class Game:
                 bc = SELECT_BORDER; bw = 3
             pygame.draw.rect(screen, bc, rect, bw, border_radius=8)
             f = pygame.font.Font(None, 28)
-            card_image = self.images.get(self.CARD_KEYS[i], {}).get("card")
+            card_image = self.images.get(asset_key, {}).get("card")
             if card_image is not None:
                 ix = rx + (card_w-card_image.get_width())//2
                 screen.blit(card_image, (ix, ry+3))
