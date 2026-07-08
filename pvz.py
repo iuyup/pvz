@@ -2,6 +2,7 @@ import pygame
 import random
 import sys
 import os
+import math
 
 # ============ CONSTANTS ============
 CELL_SIZE = 80
@@ -16,6 +17,8 @@ GRID_H = GRID_ROWS * CELL_SIZE
 SCREEN_W = GRID_W
 SCREEN_H = STATUS_H + GRID_H + CARD_H
 MAX_DT = 1.0 / 30.0
+CARD_SHAKE_DURATION = 0.2
+CARD_SHAKE_AMPLITUDE = 4
 
 STATE_MENU = "menu"
 STATE_PLAYING = "playing"
@@ -31,6 +34,7 @@ ASSET_FILES = {
     "shovel": "shovel_cut.png",
     "sun": "sun_cut.png",
 }
+FLIPPED_ASSETS = {"wallnut"}
 
 # Colors
 BG_COLOR = (55, 65, 55)
@@ -76,6 +80,9 @@ HP_WALLNUT = 400
 # Plant timings
 SUNFLOWER_INTERVAL = 10.0
 PEASHOOTER_INTERVAL = 1.5
+COOLDOWN_SUNFLOWER = 7.5
+COOLDOWN_PEASHOOTER = 7.5
+COOLDOWN_WALLNUT = 30.0
 
 # Pea
 PEA_DAMAGE = 20
@@ -188,6 +195,8 @@ PLANT_REGISTRY = {
         "letter": "S",
         "asset_key": "sunflower",
         "class": Sunflower,
+        "cooldown": COOLDOWN_SUNFLOWER,
+        "initial_cooldown": 0.0,
     },
     "peashooter": {
         "name": "Peashooter",
@@ -196,6 +205,8 @@ PLANT_REGISTRY = {
         "letter": "P",
         "asset_key": "peashooter",
         "class": Peashooter,
+        "cooldown": COOLDOWN_PEASHOOTER,
+        "initial_cooldown": 0.0,
     },
     "wallnut": {
         "name": "Wallnut",
@@ -204,6 +215,8 @@ PLANT_REGISTRY = {
         "letter": "W",
         "asset_key": "wallnut",
         "class": Wallnut,
+        "cooldown": COOLDOWN_WALLNUT,
+        "initial_cooldown": 0.0,
     },
 }
 
@@ -390,6 +403,8 @@ class Game:
                 raw = pygame.image.load(path).convert_alpha()
             except pygame.error:
                 continue
+            if key in FLIPPED_ASSETS:
+                raw = pygame.transform.flip(raw, True, False)
             images[key] = {
                 "grid": self._fit_image(raw, CELL_SIZE - 6, CELL_SIZE - 6),
                 "card": self._fit_image(raw, 42, 36),
@@ -409,6 +424,11 @@ class Game:
         self.zombies = []; self.peas = []; self.suns = []
         self.sun_count = SUN_INITIAL
         self.selected_card = None
+        self.card_cooldowns = {
+            key: float(data.get("initial_cooldown", 0.0))
+            for key, data in PLANT_REGISTRY.items()
+        }
+        self.card_shake = {key: 0.0 for key in PLANT_REGISTRY}
         self.shovel_selected = False
         self.kills = 0
         self.wave_manager = WaveManager()
@@ -476,6 +496,21 @@ class Game:
         cooldown = min(1.0, self.wave_manager.wave_timer / WAVE_COOLDOWN)
         return min(1.0, (self.wave_manager.current_wave + cooldown) / TOTAL_WAVES)
 
+    def _card_cooldown_progress(self, key):
+        plant_data = PLANT_REGISTRY[key]
+        duration = plant_data.get("cooldown", 0.0)
+        if duration <= 0.0:
+            return 1.0
+        remaining = self.card_cooldowns.get(key, 0.0)
+        return max(0.0, min(1.0, 1.0 - remaining / duration))
+
+    def _card_ready(self, key):
+        plant_data = PLANT_REGISTRY[key]
+        return self.sun_count >= plant_data["cost"] and self.card_cooldowns.get(key, 0.0) <= 0.0
+
+    def _shake_card(self, key):
+        self.card_shake[key] = CARD_SHAKE_DURATION
+
     def _draw_wave_progress(self, screen, rect):
         progress = self._wave_progress()
         shell = rect.inflate(8, 10)
@@ -524,6 +559,9 @@ class Game:
                 rx = card_gap + i*(card_w+card_gap)
                 rect = pygame.Rect(rx, SCREEN_H-CARD_H+5, card_w, CARD_H-10)
                 if rect.collidepoint(mx, my):
+                    if not self._card_ready(key):
+                        self._shake_card(key)
+                        return True
                     self.selected_card = key if self.selected_card != key else None
                     self.shovel_selected = False
                     return True
@@ -548,15 +586,25 @@ class Game:
             if self.sun_count < cost: return False
             self.sun_count -= cost
             self.grid[row][col] = plant_data["class"](row, col)
+            self.card_cooldowns[self.selected_card] = float(plant_data.get("cooldown", 0.0))
             self.selected_card = None
             return True
         return False
+
+    def handle_right_click(self):
+        if self.state != STATE_PLAYING or self.selected_card is None:
+            return False
+        self.selected_card = None
+        return True
 
     def _update_menu(self, dt):
         pass
 
     def _update_playing(self, dt):
         if self.state != STATE_PLAYING: return
+        for key in self.CARD_KEYS:
+            self.card_cooldowns[key] = max(0.0, self.card_cooldowns.get(key, 0.0) - dt)
+            self.card_shake[key] = max(0.0, self.card_shake.get(key, 0.0) - dt)
         self.wave_manager.try_spawn(dt, self)
         # Sky sun
         self.sky_sun_timer += dt
@@ -658,6 +706,31 @@ class Game:
             screen.blit(ghost, (center[0] - ghost.get_width()//2, center[1] - ghost.get_height()//2))
         else:
             pygame.draw.circle(screen, (*fallback_color, 120), center, int(24 * scale))
+
+    def _card_shake_offset(self, key):
+        remaining = self.card_shake.get(key, 0.0)
+        if remaining <= 0.0:
+            return 0
+        fade = remaining / CARD_SHAKE_DURATION
+        return int(math.sin(remaining * 85.0) * CARD_SHAKE_AMPLITUDE * fade)
+
+    def _draw_card_cooldown(self, screen, rect, progress):
+        if progress >= 1.0:
+            return
+        restored_h = int(rect.height * progress)
+        dark_h = rect.height - restored_h
+        if dark_h > 0:
+            overlay = pygame.Surface((rect.width, dark_h), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 135))
+            screen.blit(overlay, (rect.x, rect.y))
+        if restored_h > 0:
+            fill_rect = pygame.Rect(rect.x + 3, rect.bottom - restored_h, rect.width - 6, max(2, restored_h))
+            shine = pygame.Surface((fill_rect.width, fill_rect.height), pygame.SRCALPHA)
+            shine.fill((255, 255, 190, 45))
+            screen.blit(shine, fill_rect.topleft)
+        line_y = rect.bottom - restored_h
+        if rect.y < line_y < rect.bottom:
+            pygame.draw.line(screen, (255, 245, 160), (rect.x + 2, line_y), (rect.right - 2, line_y), 2)
 
     def _draw_menu(self, screen, mouse_pos, mouse_pressed):
         self._draw_grass_background(screen)
@@ -773,15 +846,18 @@ class Game:
             color = plant_data["color"]
             letter = plant_data["letter"]
             asset_key = plant_data["asset_key"]
-            rx = card_gap + i*(card_w+card_gap); ry = SCREEN_H-CARD_H+6
+            base_rx = card_gap + i*(card_w+card_gap)
+            rx = base_rx + self._card_shake_offset(key)
+            ry = SCREEN_H-CARD_H+6
             rect = pygame.Rect(rx, ry, card_w, CARD_H-12)
             affordable = self.sun_count >= cost
+            cooldown_progress = self._card_cooldown_progress(key)
+            ready = self._card_ready(key)
             dc = color if affordable else (color[0]//3,color[1]//3,color[2]//3)
             pygame.draw.rect(screen, dc, rect, border_radius=8)
-            bw = 2; bc = (180,180,180) if not affordable else (220,220,220)
-            if self.selected_card == self.CARD_KEYS[i]:
+            bw = 2; bc = (180,180,180) if not ready else (220,220,220)
+            if self.selected_card == key:
                 bc = SELECT_BORDER; bw = 3
-            pygame.draw.rect(screen, bc, rect, bw, border_radius=8)
             f = pygame.font.Font(None, 28)
             card_image = self.images.get(asset_key, {}).get("card")
             if card_image is not None:
@@ -797,6 +873,8 @@ class Game:
             f = pygame.font.Font(None, 18)
             t = f.render(f"${cost}", True, cc)
             screen.blit(t, (rx+(card_w-t.get_width())//2, ry+56))
+            self._draw_card_cooldown(screen, rect, cooldown_progress)
+            pygame.draw.rect(screen, bc, rect, bw, border_radius=8)
         # Ghost preview
         if self.selected_card is not None and self.state == STATE_PLAYING:
             mx, my = pygame.mouse.get_pos()
@@ -865,6 +943,9 @@ def main():
                 mouse_pressed = True
                 if game.state == STATE_PLAYING:
                     game.handle_click(*ev.pos)
+            elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 3:
+                if game.state == STATE_PLAYING:
+                    game.handle_right_click()
         mouse_pos = pygame.mouse.get_pos()
         if game.state == STATE_MENU:
             game._update_menu(dt)
