@@ -1440,6 +1440,10 @@ class Game:
 
 # ============ MAIN ============
 
+def is_restart_key(event):
+    return getattr(event, "key", None) == pygame.K_r or getattr(event, "unicode", "").lower() == "r"
+
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
@@ -1459,7 +1463,7 @@ def main():
                     game.state = STATE_PLAYING
                 elif ev.key == pygame.K_ESCAPE and game.state == STATE_DIFFICULTY_SELECT:
                     game.state = STATE_MENU
-                elif ev.key == pygame.K_r and game.state in (STATE_WIN, STATE_LOSE):
+                elif is_restart_key(ev) and game.state in (STATE_WIN, STATE_LOSE):
                     game.restart_game()
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 mouse_pressed = True
