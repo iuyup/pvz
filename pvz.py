@@ -20,12 +20,15 @@ MAX_DT = 1.0 / 30.0
 CARD_SHAKE_DURATION = 0.2
 CARD_SHAKE_AMPLITUDE = 4
 
+# 游戏状态
 STATE_MENU = "menu"
 STATE_DIFFICULTY_SELECT = "difficulty_select"
 STATE_PLAYING = "playing"
 STATE_PAUSED = "paused"
 STATE_WIN = "win"
 STATE_LOSE = "lose"
+
+# 资源文件
 ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets")
 ASSET_FILES = {
     "sunflower": "sunflower_cut.png",
@@ -44,7 +47,7 @@ ASSET_FILES = {
 }
 FLIPPED_ASSETS = {"wallnut"}
 
-# Colors
+# 颜色
 BG_COLOR = (55, 65, 55)
 GRID_A = (70, 95, 65)
 GRID_B = (80, 105, 75)
@@ -140,6 +143,8 @@ MOWER_SPEED = 430.0
 # Wave system
 TOTAL_WAVES = 5
 WAVE_COOLDOWN = 20.0
+START_COUNTDOWN_DURATION = 4.0
+WAVE_WARNING_LEAD_TIME = 3.0
 SPAWN_INTERVAL_W1 = 8.0
 SPAWN_INTERVAL_W5 = 3.0
 SPEED_W1 = 20.0
@@ -320,6 +325,7 @@ class CherryBomb(Plant):
         image = None if images is None else images.get(image_key, {}).get("grid")
         super().draw(screen, image)
 
+# 植物注册表
 PLANT_REGISTRY = {
     "sunflower": {
         "name": "Sunflower",
@@ -511,6 +517,7 @@ class LawnMower:
         pygame.draw.circle(screen, (95, 95, 95), (rect.x + 15, rect.y + 28), 3)
         pygame.draw.circle(screen, (95, 95, 95), (rect.x + 43, rect.y + 28), 3)
 
+# 僵尸注册表
 ZOMBIE_REGISTRY = {
     "normal": {
         "name": "Normal Zombie",
@@ -522,6 +529,7 @@ ZOMBIE_REGISTRY = {
     },
 }
 
+# 植物注册表
 ACCESSORY_REGISTRY = {
     "cone": {
         "name": "Traffic Cone",
@@ -812,6 +820,7 @@ class Game:
         self.kills = 0
         self.wave_manager = WaveManager()
         self.sky_sun_timer = 0.0
+        self.start_countdown_timer = START_COUNTDOWN_DURATION
         self.shake_time = 0.0
         self.shake_intensity = 0
 
@@ -941,6 +950,51 @@ class Game:
             pygame.draw.circle(screen, ZOMBIE_EYE, (marker_x - 3, rect.centery - 2), 2)
             pygame.draw.circle(screen, ZOMBIE_EYE, (marker_x + 3, rect.centery - 2), 2)
 
+    def _wave_alert_label(self):
+        if self.state != STATE_PLAYING:
+            return None
+        if self.start_countdown_timer > 3.0:
+            return "3", "3"
+        if self.start_countdown_timer > 2.0:
+            return "2", "2"
+        if self.start_countdown_timer > 1.0:
+            return "1", "1"
+        if self.start_countdown_timer > 0.0:
+            return "准备开始", "READY!"
+
+        wave_manager = self.wave_manager
+        if wave_manager.in_wave or wave_manager.all_done or wave_manager.current_wave >= TOTAL_WAVES:
+            return None
+        cooldown = wave_manager._wave_cooldown(self)
+        remaining = cooldown - wave_manager.wave_timer
+        if 0.0 < remaining <= WAVE_WARNING_LEAD_TIME:
+            next_wave = wave_manager.current_wave + 1
+            return f"第 {next_wave} 波僵尸即将到来", f"WAVE {next_wave} INCOMING"
+        return None
+
+    def _alert_font(self, size):
+        for name in ("microsoftyahei", "simhei", "simsun", "arialunicodems"):
+            path = pygame.font.match_font(name)
+            if path:
+                return pygame.font.Font(path, size), True
+        return pygame.font.Font(None, size), False
+
+    def _draw_wave_alert(self, screen):
+        label = self._wave_alert_label()
+        if label is None:
+            return
+        text, fallback = label
+        is_countdown = text in ("3", "2", "1")
+        font_size = 74 if is_countdown else 42
+        font, supports_cjk = self._alert_font(font_size)
+        rendered_text = text if supports_cjk else fallback
+        center = (SCREEN_W // 2, STATUS_H + GRID_H // 2)
+        band = pygame.Rect(0, center[1] - 46, SCREEN_W, 92)
+        overlay = pygame.Surface((band.width, band.height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 90))
+        screen.blit(overlay, band.topleft)
+        self._draw_text_center(screen, font, rendered_text, (255, 245, 190), center, True)
+
     def handle_click(self, mx, my):
         if self.state != STATE_PLAYING: return True
         if self._shovel_rect().collidepoint(mx, my):
@@ -1007,6 +1061,7 @@ class Game:
         for key in self.CARD_KEYS:
             self.card_cooldowns[key] = max(0.0, self.card_cooldowns.get(key, 0.0) - dt)
             self.card_shake[key] = max(0.0, self.card_shake.get(key, 0.0) - dt)
+        self.start_countdown_timer = max(0.0, self.start_countdown_timer - dt)
         self.shake_time = max(0.0, self.shake_time - dt)
         self.wave_manager.try_spawn(dt, self)
         # Sky sun
@@ -1350,6 +1405,7 @@ class Game:
             elif self.shovel_selected:
                 image = self.images.get("shovel", {}).get("button")
                 self._draw_follow_shadow(screen, image, (mx, my), SHOVEL_METAL, 1.75)
+        self._draw_wave_alert(screen)
         if screen is not output_screen:
             output_screen.fill(BG_COLOR)
             output_screen.blit(screen, shake_offset)

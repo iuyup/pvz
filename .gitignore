@@ -29,3 +29,5 @@ Thumbs.db
 CLAUDE.md
 DEVLOG.md
 AGENTS.md
+*.agents 
+*.codex
