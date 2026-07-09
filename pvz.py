@@ -40,6 +40,7 @@ ASSET_FILES = {
     "shovel": "shovel_cut.png",
     "sun": "sun_cut.png",
     "lawn_checker": "lawn_checker_mild.png",
+    "lawn_mower": "lawn_mower.png",
 }
 FLIPPED_ASSETS = {"wallnut"}
 
@@ -62,6 +63,10 @@ PEA_COLOR = (50, 230, 50)
 SUN_COLOR = (255, 245, 60)
 TEXT_COLOR = (255, 255, 255)
 SHADOW_COLOR = (0, 0, 0)
+MOWER_BODY = (205, 40, 32)
+MOWER_BODY_DARK = (125, 24, 22)
+MOWER_METAL = (205, 210, 205)
+MOWER_WHEEL = (24, 24, 24)
 WIN_BG = (0, 180, 0, 120)
 LOSE_BG = (200, 0, 0, 120)
 WIN_TEXT = (80, 255, 80)
@@ -123,6 +128,13 @@ ZOMBIE_HEIGHT = 62
 ZOMBIE_IMAGE_MAX_W = 58
 ZOMBIE_IMAGE_MAX_H = CELL_SIZE - 4
 ACCESSORY_ASSET_KEYS = {"cone_accessory", "bucket_accessory"}
+
+# Lawn mower
+MOWER_WIDTH = 72
+MOWER_HEIGHT = 58
+MOWER_IDLE_X = 4
+MOWER_TRIGGER_X = CELL_SIZE
+MOWER_SPEED = 430.0
 
 # Wave system
 TOTAL_WAVES = 5
@@ -435,6 +447,69 @@ class Zombie:
         by = STATUS_H + self.row * CELL_SIZE + (CELL_SIZE - base_image.get_height()) // 2
         screen.blit(accessory_image, (bx + offset[0], by + offset[1]))
 
+class LawnMower:
+    def __init__(self, row):
+        self.row = row
+        self.x = float(MOWER_IDLE_X)
+        self.state = "idle"
+
+    def rect(self):
+        y = STATUS_H + self.row * CELL_SIZE + CELL_SIZE - MOWER_HEIGHT - 10
+        return pygame.Rect(int(self.x), y, MOWER_WIDTH, MOWER_HEIGHT)
+
+    def update(self, dt, game):
+        if self.state == "idle":
+            for zombie in game.zombies:
+                if zombie.row == self.row and zombie.hp > 0 and zombie.x <= MOWER_TRIGGER_X:
+                    self.state = "running"
+                    game.shake_time = max(game.shake_time, 0.12)
+                    game.shake_intensity = max(game.shake_intensity, 2)
+                    break
+            return
+
+        if self.state != "running":
+            return
+
+        self.x += MOWER_SPEED * dt
+        mower_rect = self.rect()
+        for zombie in game.zombies:
+            if zombie.row != self.row or zombie.hp <= 0:
+                continue
+            zombie_rect = pygame.Rect(int(zombie.x), STATUS_H + zombie.row * CELL_SIZE, zombie.width, CELL_SIZE)
+            if mower_rect.colliderect(zombie_rect):
+                zombie.accessory_hp = 0
+                zombie.accessory_key = None
+                zombie.accessory_asset_key = None
+                zombie.hp = 0
+
+        if self.x > GRID_W:
+            self.state = "spent"
+
+    def draw(self, screen, image=None):
+        if self.state == "spent":
+            return
+        rect = self.rect()
+        shadow_rect = pygame.Rect(rect.x + 11, rect.bottom - 12, rect.width - 22, 8)
+        pygame.draw.ellipse(screen, (0, 0, 0, 48), shadow_rect)
+        if image is not None:
+            ix = rect.centerx - image.get_width() // 2
+            iy = rect.bottom - image.get_height()
+            screen.blit(image, (ix, iy))
+            return
+        deck = pygame.Rect(rect.x + 5, rect.y + 11, rect.width - 12, 16)
+        pygame.draw.rect(screen, MOWER_BODY_DARK, deck.move(0, 4), border_radius=5)
+        pygame.draw.rect(screen, MOWER_BODY, deck, border_radius=5)
+        pygame.draw.rect(screen, (75, 12, 12), deck, 2, border_radius=5)
+        engine = pygame.Rect(rect.x + 18, rect.y + 3, 20, 14)
+        pygame.draw.rect(screen, MOWER_METAL, engine, border_radius=4)
+        pygame.draw.rect(screen, (100, 105, 100), engine, 2, border_radius=4)
+        pygame.draw.line(screen, MOWER_METAL, (rect.x + 9, rect.y + 10), (rect.x + 1, rect.y - 5), 3)
+        pygame.draw.line(screen, MOWER_METAL, (rect.x + 1, rect.y - 5), (rect.x + 20, rect.y - 11), 3)
+        pygame.draw.circle(screen, MOWER_WHEEL, (rect.x + 15, rect.y + 28), 6)
+        pygame.draw.circle(screen, MOWER_WHEEL, (rect.x + 43, rect.y + 28), 6)
+        pygame.draw.circle(screen, (95, 95, 95), (rect.x + 15, rect.y + 28), 3)
+        pygame.draw.circle(screen, (95, 95, 95), (rect.x + 43, rect.y + 28), 3)
+
 ZOMBIE_REGISTRY = {
     "normal": {
         "name": "Normal Zombie",
@@ -650,6 +725,20 @@ class Game:
                     queue.append((nx, ny))
         return result
 
+    def _remove_checkerboard_background_pixels(self, image):
+        result = image.copy()
+        width, height = result.get_size()
+        for y in range(height):
+            for x in range(width):
+                r, g, b, a = result.get_at((x, y))
+                if a < 8:
+                    continue
+                spread = max(r, g, b) - min(r, g, b)
+                average = (r + g + b) / 3
+                if average > 220 and spread < 12:
+                    result.set_at((x, y), (0, 0, 0, 0))
+        return result
+
     def _load_images(self):
         images = {}
         raw_images = {}
@@ -663,8 +752,10 @@ class Game:
                 continue
             if key in FLIPPED_ASSETS:
                 raw = pygame.transform.flip(raw, True, False)
-            if key in ACCESSORY_ASSET_KEYS:
+            if key in ACCESSORY_ASSET_KEYS or key == "lawn_mower":
                 raw = self._remove_edge_background(raw)
+                if key == "lawn_mower":
+                    raw = self._remove_checkerboard_background_pixels(raw)
                 raw = self._trim_alpha(raw)
             raw_images[key] = raw
 
@@ -677,6 +768,11 @@ class Game:
             if key == "lawn_checker":
                 images[key] = {
                     "lawn": pygame.transform.smoothscale(raw, (GRID_W, GRID_H)),
+                }
+                continue
+            if key == "lawn_mower":
+                images[key] = {
+                    "mower": self._fit_image(raw, MOWER_WIDTH, MOWER_HEIGHT),
                 }
                 continue
             zombie_image = self._fit_image(raw, ZOMBIE_IMAGE_MAX_W, ZOMBIE_IMAGE_MAX_H)
@@ -702,6 +798,7 @@ class Game:
     def _reset_game(self):
         self.grid = [[None]*GRID_COLS for _ in range(GRID_ROWS)]
         self.zombies = []; self.peas = []; self.suns = []
+        self.mowers = [LawnMower(row) for row in range(GRID_ROWS)]
         self.sun_count = SUN_INITIAL
         self.selected_card = None
         self.card_cooldowns = {
@@ -931,6 +1028,8 @@ class Game:
             if z.hp <= 0:
                 self.zombies.remove(z); self.kills += 1; continue
             z.update(dt, self)
+        for mower in self.mowers:
+            mower.update(dt, self)
         # Pea-Zombie collision
         hit = []
         for pea in self.peas:
@@ -1177,6 +1276,8 @@ class Game:
                 accessory_offset = ACCESSORY_REGISTRY[z.accessory_key]["offset"]
                 z.draw_accessory(screen, base_image, accessory_image, accessory_offset)
                 z.draw_health(screen)
+        for mower in self.mowers:
+            mower.draw(screen, self.images.get("lawn_mower", {}).get("mower"))
         for p in exploding_plants: p.draw(screen, self.images)
         for pea in self.peas: pea.draw(screen)
         for s in self.suns: s.draw(screen, self.images.get("sun", {}).get("sun"))
