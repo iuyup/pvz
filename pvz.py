@@ -39,6 +39,7 @@ ASSET_FILES = {
     "bucket_accessory": "bucket_accessory.png",
     "shovel": "shovel_cut.png",
     "sun": "sun_cut.png",
+    "lawn_checker": "lawn_checker_mild.png",
 }
 FLIPPED_ASSETS = {"wallnut"}
 
@@ -125,7 +126,7 @@ ACCESSORY_ASSET_KEYS = {"cone_accessory", "bucket_accessory"}
 
 # Wave system
 TOTAL_WAVES = 5
-WAVE_COOLDOWN = 30.0
+WAVE_COOLDOWN = 20.0
 SPAWN_INTERVAL_W1 = 8.0
 SPAWN_INTERVAL_W5 = 3.0
 SPEED_W1 = 20.0
@@ -673,6 +674,11 @@ class Game:
         }
 
         for key, raw in raw_images.items():
+            if key == "lawn_checker":
+                images[key] = {
+                    "lawn": pygame.transform.smoothscale(raw, (GRID_W, GRID_H)),
+                }
+                continue
             zombie_image = self._fit_image(raw, ZOMBIE_IMAGE_MAX_W, ZOMBIE_IMAGE_MAX_H)
             accessory_image = None
             if key in accessory_sizes:
@@ -1089,18 +1095,22 @@ class Game:
         else:
             shake_offset = (0, 0)
         screen.fill(BG_COLOR)
-        # Grid
-        for row in range(GRID_ROWS):
-            for col in range(GRID_COLS):
-                x = col*CELL_SIZE; y = STATUS_H + row*CELL_SIZE
-                if col == HOUSE_COL:
-                    color = HOUSE_COLOR
-                elif col == SPAWN_COL:
-                    color = SPAWN_COLOR
-                else:
-                    color = GRID_A if (row+col)%2==0 else GRID_B
-                pygame.draw.rect(screen, color, (x,y,CELL_SIZE,CELL_SIZE))
-                pygame.draw.rect(screen, GRID_LINE, (x,y,CELL_SIZE,CELL_SIZE), 1)
+        lawn_image = self.images.get("lawn_checker", {}).get("lawn")
+        if lawn_image is not None:
+            screen.blit(lawn_image, (0, STATUS_H))
+        else:
+            # Grid fallback when the background asset is missing.
+            for row in range(GRID_ROWS):
+                for col in range(GRID_COLS):
+                    x = col*CELL_SIZE; y = STATUS_H + row*CELL_SIZE
+                    if col == HOUSE_COL:
+                        color = HOUSE_COLOR
+                    elif col == SPAWN_COL:
+                        color = SPAWN_COLOR
+                    else:
+                        color = GRID_A if (row+col)%2==0 else GRID_B
+                    pygame.draw.rect(screen, color, (x,y,CELL_SIZE,CELL_SIZE))
+                    pygame.draw.rect(screen, GRID_LINE, (x,y,CELL_SIZE,CELL_SIZE), 1)
         # Status bar
         pygame.draw.rect(screen, STATUS_BG, (0,0,SCREEN_W,STATUS_H))
         pygame.draw.line(screen, (60,60,60), (0,STATUS_H), (SCREEN_W,STATUS_H), 2)
