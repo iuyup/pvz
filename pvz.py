@@ -120,6 +120,8 @@ SKY_SUN_MAX_ACTIVE = 3
 SUN_FALL_SPEED = 45.0
 SUN_CLICK_RADIUS = 30
 SUN_MAX_Y = STATUS_H + GRID_H - SUN_CLICK_RADIUS
+SUN_SKY_IMAGE_ALPHA = 170
+SUN_SUNFLOWER_IMAGE_ALPHA = 170
 
 # Zombie
 ZOMBIE_HP = 100
@@ -576,6 +578,9 @@ class Sun:
         if self.dead: return
         cx, cy = int(self.x), int(self.y)
         if image is not None:
+            if self.source in ("sky", "sunflower"):
+                image = image.copy()
+                image.set_alpha(SUN_SKY_IMAGE_ALPHA if self.source == "sky" else SUN_SUNFLOWER_IMAGE_ALPHA)
             screen.blit(image, (cx - image.get_width()//2, cy - image.get_height()//2))
         else:
             pygame.draw.circle(screen, SUN_COLOR, (cx, cy), 22)
