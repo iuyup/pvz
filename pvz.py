@@ -93,7 +93,7 @@ HP_WALLNUT = 400
 HP_CHERRY_BOMB = 9999
 
 # Plant timings
-SUNFLOWER_INTERVAL = 10.0
+SUNFLOWER_INTERVAL = 12.0
 PEASHOOTER_INTERVAL = 1.5
 COOLDOWN_SUNFLOWER = 7.5
 COOLDOWN_PEASHOOTER = 7.5
@@ -112,7 +112,8 @@ PEA_SPEED = 300.0
 SUN_INITIAL = 50
 SUN_VALUE = 25
 SUN_LIFETIME = 8.0
-SKY_SUN_INTERVAL = 8.0
+SKY_SUN_INTERVAL = 10.0
+SKY_SUN_MAX_ACTIVE = 3
 SUN_FALL_SPEED = 45.0
 SUN_CLICK_RADIUS = 30
 SUN_MAX_Y = STATUS_H + GRID_H - SUN_CLICK_RADIUS
@@ -235,7 +236,7 @@ class Sunflower(Plant):
             self.sun_timer = 0.0
             sx = self.col * CELL_SIZE + CELL_SIZE//2 + random.randint(-15, 15)
             sy = STATUS_H + self.row * CELL_SIZE + CELL_SIZE//2 + random.randint(-15, 15)
-            game.add_sun(sx, sy, SUN_VALUE)
+            game.add_sun(sx, sy, SUN_VALUE, source="sunflower")
 
 class Peashooter(Plant):
     def __init__(self, row, col):
@@ -549,10 +550,11 @@ class Pea:
         pygame.draw.circle(screen, (180, 255, 180), (cx, cy), 4)
 
 class Sun:
-    def __init__(self, x, y, value, lifetime):
+    def __init__(self, x, y, value, lifetime, source="plant"):
         self.x = max(SUN_CLICK_RADIUS, min(x, GRID_W - SUN_CLICK_RADIUS))
         self.y = min(y, SUN_MAX_Y)
         self.value = value
+        self.source = source
         self.lifetime = lifetime; self.age = 0.0
         self.dead = False
         self.target_y = min(self.y + random.randint(40, 100), SUN_MAX_Y)
@@ -831,8 +833,11 @@ class Game:
         if self.state == STATE_PLAYING:
             self.state = STATE_LOSE
 
-    def add_sun(self, x, y, value, lifetime=SUN_LIFETIME):
-        self.suns.append(Sun(x, y, value, lifetime))
+    def add_sun(self, x, y, value, lifetime=SUN_LIFETIME, source="plant"):
+        self.suns.append(Sun(x, y, value, lifetime, source))
+
+    def active_sky_sun_count(self):
+        return sum(1 for sun in self.suns if sun.source == "sky" and not sun.dead)
 
     def add_pea(self, row, x, damage=PEA_DAMAGE):
         self.peas.append(Pea(row, x, damage))
@@ -988,9 +993,10 @@ class Game:
         return False
 
     def handle_right_click(self):
-        if self.state != STATE_PLAYING or self.selected_card is None:
+        if self.state != STATE_PLAYING or (self.selected_card is None and not self.shovel_selected):
             return False
         self.selected_card = None
+        self.shovel_selected = False
         return True
 
     def _update_menu(self, dt):
@@ -1006,8 +1012,11 @@ class Game:
         # Sky sun
         self.sky_sun_timer += dt
         if self.sky_sun_timer >= SKY_SUN_INTERVAL:
-            self.sky_sun_timer = 0.0
-            self.add_sun(random.randint(30,GRID_W-30), STATUS_H-10, SUN_VALUE)
+            if self.active_sky_sun_count() < SKY_SUN_MAX_ACTIVE:
+                self.sky_sun_timer = 0.0
+                self.add_sun(random.randint(30,GRID_W-30), STATUS_H-10, SUN_VALUE, source="sky")
+            else:
+                self.sky_sun_timer = SKY_SUN_INTERVAL
         # Plants
         for row in range(GRID_ROWS):
             for col in range(GRID_COLS):
