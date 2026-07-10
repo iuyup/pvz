@@ -407,7 +407,7 @@ class Zombie:
             return self.accessory_asset_key
         return None
     def _get_blocker(self, game):
-        return game.get_zombie_blocker(self.row, self.x)
+        return game.get_zombie_blocker(self.row, self.x, self.width)
     def update(self, dt, game):
         blocker = self._get_blocker(game)
         if blocker is not None:
@@ -645,13 +645,34 @@ class WaveManager:
         self.spawn_plan = self._build_spawn_plan()
         self.spawn_timer = 0.0
         self.in_wave = True
+
+    def _spawn_next_zombie(self, game):
+        if self.zombies_spawned >= self.zombies_in_wave:
+            return False
+        row = random.randint(0, GRID_ROWS - 1)
+        if self.zombies_spawned < len(self.spawn_plan):
+            zombie_key, accessory_key = self.spawn_plan[self.zombies_spawned]
+        else:
+            zombie_key, accessory_key = self._spawn_choice()
+        self.zombies_spawned += 1
+        game.spawn_zombie(row, self._zombie_speed(), zombie_key, accessory_key)
+        return True
+
+    def start_first_wave(self, game):
+        if self.current_wave != 0 or self.in_wave or self.all_done:
+            return
+        self._start_wave(game)
+        self._spawn_next_zombie(game)
+
     def try_spawn(self, dt, game):
         if self.all_done or game.state != STATE_PLAYING:
             return
         if not self.in_wave:
             self.wave_timer += dt
-            if self.wave_timer >= self._wave_cooldown(game):
-                self._start_wave(game)
+            if self.wave_timer < self._wave_cooldown(game):
+                return
+            self._start_wave(game)
+            self._spawn_next_zombie(game)
             return
         if self.zombies_spawned >= self.zombies_in_wave:
             if not game.has_zombies():
@@ -665,13 +686,7 @@ class WaveManager:
         interval = self._spawn_interval()
         if self.spawn_timer >= interval:
             self.spawn_timer -= interval
-            row = random.randint(0, GRID_ROWS - 1)
-            if self.zombies_spawned < len(self.spawn_plan):
-                zombie_key, accessory_key = self.spawn_plan[self.zombies_spawned]
-            else:
-                zombie_key, accessory_key = self._spawn_choice()
-            self.zombies_spawned += 1
-            game.spawn_zombie(row, self._zombie_speed(), zombie_key, accessory_key)
+            self._spawn_next_zombie(game)
 
 # ============ GAME ============
 
@@ -885,11 +900,14 @@ class Game:
     def has_zombie_ahead(self, row, min_x):
         return any(z.row == row and z.x >= min_x for z in self.zombies)
 
-    def get_zombie_blocker(self, row, x):
+    def get_zombie_blocker(self, row, x, width):
         for col in range(GRID_COLS-1, -1, -1):
             plant = self.grid[row][col]
             if plant is not None and plant.hp > 0:
-                if x <= (col+1)*CELL_SIZE - 8:
+                plant_left = col * CELL_SIZE
+                plant_right = (col + 1) * CELL_SIZE
+                zombie_right = x + width
+                if zombie_right >= plant_left and x <= plant_right - 8:
                     return plant
         return None
 
@@ -1066,9 +1084,15 @@ class Game:
         for key in self.CARD_KEYS:
             self.card_cooldowns[key] = max(0.0, self.card_cooldowns.get(key, 0.0) - dt)
             self.card_shake[key] = max(0.0, self.card_shake.get(key, 0.0) - dt)
-        self.start_countdown_timer = max(0.0, self.start_countdown_timer - dt)
+        if self.start_countdown_timer > 0.0:
+            self.start_countdown_timer = max(0.0, self.start_countdown_timer - dt)
+            if self.start_countdown_timer <= 0.0:
+                self.wave_manager.start_first_wave(self)
+        elif self.wave_manager.current_wave == 0 and not self.wave_manager.in_wave:
+            self.wave_manager.start_first_wave(self)
+        else:
+            self.wave_manager.try_spawn(dt, self)
         self.shake_time = max(0.0, self.shake_time - dt)
-        self.wave_manager.try_spawn(dt, self)
         # Sky sun
         self.sky_sun_timer += dt
         if self.sky_sun_timer >= SKY_SUN_INTERVAL:
@@ -1102,9 +1126,17 @@ class Game:
         # Pea-Zombie collision
         hit = []
         for pea in self.peas:
-            for z in self.zombies:
-                if pea.row == z.row and z.hp > 0 and z.x <= pea.x <= z.x+z.width:
-                    z.take_damage(pea.damage); hit.append(pea); break
+            target = min(
+                (
+                    z for z in self.zombies
+                    if pea.row == z.row and z.hp > 0 and z.x <= pea.x <= z.x + z.width
+                ),
+                key=lambda z: z.x,
+                default=None,
+            )
+            if target is not None:
+                target.take_damage(pea.damage)
+                hit.append(pea)
         for p in hit:
             if p in self.peas: self.peas.remove(p)
         killed = sum(1 for z in self.zombies if z.hp <= 0)
