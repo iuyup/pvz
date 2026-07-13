@@ -42,6 +42,16 @@ python -m pip install pygame
 python pvz.py
 ```
 
+## Automated regression tests
+
+The tests run Pygame with the dummy SDL driver and do not open a game window:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+They cover first-wave timing, zombie blocking, pea targeting, mower kills, win/loss flow, sun collection, and wave counts for all difficulties.
+
 如果已经安装过 Pygame，直接运行：
 
 ```powershell
