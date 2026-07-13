@@ -39,6 +39,17 @@ class GameLogicTests(unittest.TestCase):
         self.assertEqual(game.wave_manager.zombies_spawned, 1)
         self.assertEqual(len(game.zombies), 1)
 
+    def test_viewport_scales_and_maps_mouse_coordinates(self):
+        viewport = pvz.get_game_viewport((1600, 900))
+
+        self.assertEqual(viewport.size, (1467, 900))
+        self.assertEqual(pvz.window_to_game_pos(viewport.topleft, viewport), (0, 0))
+        self.assertEqual(
+            pvz.window_to_game_pos((viewport.right - 1, viewport.bottom - 1), viewport),
+            (pvz.SCREEN_W - 1, pvz.SCREEN_H - 1),
+        )
+        self.assertIsNone(pvz.window_to_game_pos((viewport.x - 1, viewport.y), viewport))
+
     def test_zombie_only_blocks_on_contacted_forward_plant(self):
         game = self.make_game()
         game.grid[2][3] = pvz.Wallnut(2, 3)

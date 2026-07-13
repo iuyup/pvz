@@ -52,6 +52,10 @@ python -m unittest discover -s tests -v
 
 They cover first-wave timing, zombie blocking, pea targeting, mower kills, win/loss flow, sun collection, and wave counts for all difficulties.
 
+## Window controls
+
+The game keeps its original logical layout while scaling to the window size. Drag the native title bar to move the window; drag its edges or corners to resize it. Black bars preserve the game's aspect ratio on non-matching window sizes.
+
 如果已经安装过 Pygame，直接运行：
 
 ```powershell

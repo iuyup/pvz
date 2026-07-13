@@ -19,6 +19,30 @@ SCREEN_H = STATUS_H + GRID_H + CARD_H
 MAX_DT = 1.0 / 30.0
 CARD_SHAKE_DURATION = 0.2
 CARD_SHAKE_AMPLITUDE = 4
+WINDOW_LETTERBOX_COLOR = (18, 18, 18)
+
+
+def get_game_viewport(window_size):
+    """Return the centered, aspect-ratio-preserving game viewport."""
+    window_w, window_h = window_size
+    scale = min(window_w / SCREEN_W, window_h / SCREEN_H)
+    viewport_w = max(1, round(SCREEN_W * scale))
+    viewport_h = max(1, round(SCREEN_H * scale))
+    return pygame.Rect(
+        (window_w - viewport_w) // 2,
+        (window_h - viewport_h) // 2,
+        viewport_w,
+        viewport_h,
+    )
+
+
+def window_to_game_pos(window_pos, viewport):
+    """Convert a physical-window mouse coordinate into the logical game space."""
+    if not viewport.collidepoint(window_pos):
+        return None
+    x = (window_pos[0] - viewport.x) * SCREEN_W // viewport.width
+    y = (window_pos[1] - viewport.y) * SCREEN_H // viewport.height
+    return min(SCREEN_W - 1, x), min(SCREEN_H - 1, y)
 
 # 游戏状态
 STATE_MENU = "menu"
@@ -1268,7 +1292,7 @@ class Game:
             self.state = STATE_MENU
 
     def _draw_paused(self, screen, mouse_pos, mouse_pressed):
-        self._draw_playing(screen)
+        self._draw_playing(screen, mouse_pos)
         ov = pygame.Surface((SCREEN_W,SCREEN_H), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 150))
         screen.blit(ov, (0,0))
@@ -1283,7 +1307,9 @@ class Game:
             self.state = STATE_MENU
         self._draw_text_center(screen, hint_font, "ESC to continue", (200, 200, 200), (SCREEN_W//2, SCREEN_H//2 + 115))
 
-    def _draw_playing(self, screen):
+    def _draw_playing(self, screen, mouse_pos=None):
+        if mouse_pos is None:
+            mouse_pos = pygame.mouse.get_pos()
         output_screen = screen
         if self.shake_time > 0.0 and self.shake_intensity > 0:
             shake_amount = int(self.shake_intensity)
@@ -1425,7 +1451,7 @@ class Game:
             pygame.draw.rect(screen, bc, rect, bw, border_radius=8)
         # Ghost preview
         if self.selected_card is not None and self.state == STATE_PLAYING:
-            mx, my = pygame.mouse.get_pos()
+            mx, my = mouse_pos
             if STATUS_H <= my < STATUS_H+GRID_H:
                 gc = mx//CELL_SIZE; gr = (my-STATUS_H)//CELL_SIZE
                 if 0<=gc<GRID_COLS and 0<=gr<GRID_ROWS and gc not in (HOUSE_COL, SPAWN_COL) and self.grid[gr][gc] is None:
@@ -1433,7 +1459,7 @@ class Game:
                     s.fill((255,255,255,50))
                     screen.blit(s, (gc*CELL_SIZE, STATUS_H+gr*CELL_SIZE))
         if self.state == STATE_PLAYING:
-            mx, my = pygame.mouse.get_pos()
+            mx, my = mouse_pos
             if self.selected_card is not None:
                 plant_data = PLANT_REGISTRY.get(self.selected_card)
                 if plant_data is not None:
@@ -1447,7 +1473,7 @@ class Game:
             output_screen.fill(BG_COLOR)
             output_screen.blit(screen, shake_offset)
     def _draw_gameover(self, screen, mouse_pos, mouse_pressed):
-        self._draw_playing(screen)
+        self._draw_playing(screen, mouse_pos)
         if self.state == STATE_WIN:
             overlay_color = WIN_BG
             title = "YOU WIN!"
@@ -1478,8 +1504,9 @@ def is_restart_key(event):
 
 def main():
     pygame.init()
-    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
+    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.RESIZABLE)
     pygame.display.set_caption("Plants vs Zombies - Simplified")
+    game_surface = pygame.Surface((SCREEN_W, SCREEN_H)).convert()
     clock = pygame.time.Clock()
     game = Game()
     running = True
@@ -1488,6 +1515,8 @@ def main():
         mouse_pressed = False
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT: running = False
+            elif ev.type == pygame.VIDEORESIZE:
+                screen = pygame.display.set_mode(ev.size, pygame.RESIZABLE)
             elif ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE and game.state == STATE_PLAYING:
                     game.state = STATE_PAUSED
@@ -1498,28 +1527,38 @@ def main():
                 elif is_restart_key(ev) and game.state in (STATE_WIN, STATE_LOSE):
                     game.restart_game()
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                mouse_pressed = True
-                if game.state == STATE_PLAYING:
-                    game.handle_click(*ev.pos)
+                game_pos = window_to_game_pos(ev.pos, get_game_viewport(screen.get_size()))
+                if game_pos is not None:
+                    mouse_pressed = True
+                    if game.state == STATE_PLAYING:
+                        game.handle_click(*game_pos)
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 3:
-                if game.state == STATE_PLAYING:
+                game_pos = window_to_game_pos(ev.pos, get_game_viewport(screen.get_size()))
+                if game_pos is not None and game.state == STATE_PLAYING:
                     game.handle_right_click()
-        mouse_pos = pygame.mouse.get_pos()
+        viewport = get_game_viewport(screen.get_size())
+        mouse_pos = window_to_game_pos(pygame.mouse.get_pos(), viewport) or (-1, -1)
         if game.state == STATE_MENU:
             game._update_menu(dt)
-            game._draw_menu(screen, mouse_pos, mouse_pressed)
+            game._draw_menu(game_surface, mouse_pos, mouse_pressed)
         elif game.state == STATE_DIFFICULTY_SELECT:
             game._update_menu(dt)
-            game._draw_difficulty_select(screen, mouse_pos, mouse_pressed)
+            game._draw_difficulty_select(game_surface, mouse_pos, mouse_pressed)
         elif game.state == STATE_PLAYING:
             game._update_playing(dt)
-            game._draw_playing(screen)
+            game._draw_playing(game_surface, mouse_pos)
         elif game.state == STATE_PAUSED:
             game._update_paused(dt)
-            game._draw_paused(screen, mouse_pos, mouse_pressed)
+            game._draw_paused(game_surface, mouse_pos, mouse_pressed)
         elif game.state in (STATE_WIN, STATE_LOSE):
             game._update_gameover(dt)
-            game._draw_gameover(screen, mouse_pos, mouse_pressed)
+            game._draw_gameover(game_surface, mouse_pos, mouse_pressed)
+        screen.fill(WINDOW_LETTERBOX_COLOR)
+        if viewport.size == (SCREEN_W, SCREEN_H):
+            screen.blit(game_surface, viewport.topleft)
+        else:
+            scaled_surface = pygame.transform.smoothscale(game_surface, viewport.size)
+            screen.blit(scaled_surface, viewport.topleft)
         pygame.display.flip()
     pygame.quit()
     sys.exit()
