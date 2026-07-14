@@ -2,6 +2,7 @@
 
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -116,6 +117,27 @@ class GameLogicTests(unittest.TestCase):
             all("logical_image" in source for source in loader._high_resolution_sources.values())
         )
 
+    def test_player_accessories_are_mirrored_and_have_individual_plant_offsets(self):
+        loader = object.__new__(pvz.Game)
+        loader.images = type(self).original_load_images(loader)
+        expected_plants = {"sunflower", "peashooter", "wallnut"}
+
+        for accessory_key, accessory_data in pvz.ACCESSORY_REGISTRY.items():
+            with self.subTest(accessory=accessory_key):
+                images = loader.images[accessory_data["asset_key"]]
+                zombie_image = images["accessory"]
+                player_image = images["player_accessory"]
+                self.assertEqual(player_image.get_size(), zombie_image.get_size())
+                self.assertNotEqual(
+                    pygame.image.tostring(player_image, "RGBA"),
+                    pygame.image.tostring(zombie_image, "RGBA"),
+                )
+                self.assertIsNotNone(loader._high_resolution_image(player_image, 2, 2))
+                offsets = accessory_data["plant_offsets"]
+                self.assertEqual(set(offsets), expected_plants)
+                self.assertNotEqual(offsets["peashooter"], offsets["sunflower"])
+                self.assertNotEqual(offsets["peashooter"], offsets["wallnut"])
+
     def test_zombie_only_blocks_on_contacted_forward_plant(self):
         game = self.make_game()
         game.grid[2][3] = pvz.Wallnut(2, 3)
@@ -197,6 +219,109 @@ class GameLogicTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertTrue(sun.dead)
         self.assertEqual(game.sun_count, pvz.SUN_INITIAL + pvz.SUN_VALUE)
+
+    def test_accessory_drop_is_bound_to_spawned_accessory(self):
+        game = self.make_game()
+        game.spawn_zombie(0, 0, accessory_key="cone")
+        accessory_zombie = game.zombies[0]
+        accessory_zombie.accessory_hp = 0
+        accessory_zombie.accessory_key = None
+        accessory_zombie.hp = 0
+
+        with patch("pvz.random.random", return_value=0.0):
+            game._finalize_zombie_deaths()
+
+        self.assertEqual(accessory_zombie.drop_accessory_key, "cone")
+        self.assertEqual([drop.accessory_key for drop in game.accessory_drops], ["cone"])
+
+        normal_zombie = pvz.Zombie(0, speed=0)
+        normal_zombie.hp = 0
+        game.zombies = [normal_zombie]
+        with patch("pvz.random.random") as drop_roll:
+            game._finalize_zombie_deaths()
+
+        drop_roll.assert_not_called()
+        self.assertEqual(len(game.accessory_drops), 1)
+
+    def test_accessory_pickup_equips_plant_and_absorbs_damage(self):
+        game = self.make_game()
+        drop = pvz.AccessoryDrop("cone", 300, 220)
+        game.accessory_drops = [drop]
+
+        self.assertTrue(game.handle_click(drop.x, drop.y))
+        self.assertEqual(game.accessory_inventory["cone"], 1)
+
+        slot = game._accessory_inventory_rects()["cone"]
+        self.assertTrue(game.handle_click(*slot.center))
+        plant = pvz.Peashooter(1, 3)
+        game.grid[1][3] = plant
+        self.assertTrue(game.handle_click(3 * pvz.CELL_SIZE + 40, pvz.STATUS_H + pvz.CELL_SIZE + 40))
+
+        self.assertEqual(game.accessory_inventory["cone"], 0)
+        self.assertEqual(plant.accessory_key, "cone")
+        self.assertEqual(plant.accessory_hp, pvz.ZOMBIE_CONEHEAD_ARMOR)
+        plant.take_damage(pvz.ZOMBIE_CONEHEAD_ARMOR)
+        self.assertEqual(plant.hp, pvz.HP_PEASHOOTER)
+        self.assertIsNone(plant.accessory_key)
+        plant.take_damage(pvz.ZOMBIE_ATTACK_DMG)
+        self.assertEqual(plant.hp, pvz.HP_PEASHOOTER - pvz.ZOMBIE_ATTACK_DMG)
+
+    def test_cherry_bomb_cannot_consume_accessory_inventory(self):
+        game = self.make_game()
+        game.accessory_inventory["bucket"] = 1
+        game.selected_accessory = "bucket"
+        cherry_bomb = pvz.CherryBomb(1, 3)
+        game.grid[1][3] = cherry_bomb
+
+        game.handle_click(3 * pvz.CELL_SIZE + 40, pvz.STATUS_H + pvz.CELL_SIZE + 40)
+
+        self.assertEqual(game.accessory_inventory["bucket"], 1)
+        self.assertEqual(game.selected_accessory, "bucket")
+        self.assertIsNone(cherry_bomb.accessory_key)
+
+    def test_pea_cherry_and_mower_kills_all_run_accessory_drop_logic(self):
+        with self.subTest(source="pea"):
+            game = self.make_game()
+            game.start_countdown_timer = 999
+            game.spawn_zombie(0, 0, accessory_key="cone")
+            zombie = game.zombies[0]
+            zombie.x = 400
+            zombie.accessory_hp = 0
+            zombie.accessory_key = None
+            zombie.hp = pvz.PEA_DAMAGE
+            game.peas = [pvz.Pea(0, 410, pvz.PEA_DAMAGE)]
+
+            with patch("pvz.random.random", return_value=0.0):
+                game._update_playing(0)
+
+            self.assertEqual([drop.accessory_key for drop in game.accessory_drops], ["cone"])
+
+        with self.subTest(source="cherry_bomb"):
+            game = self.make_game()
+            cherry_bomb = pvz.CherryBomb(2, 4)
+            game.grid[2][4] = cherry_bomb
+            game.spawn_zombie(2, 0, accessory_key="bucket")
+            zombie = game.zombies[0]
+            zombie.x = 4 * pvz.CELL_SIZE + 10
+
+            with patch("pvz.random.random", return_value=0.0):
+                cherry_bomb._enter_exploding(game)
+                game._finalize_zombie_deaths()
+
+            self.assertEqual([drop.accessory_key for drop in game.accessory_drops], ["bucket"])
+
+        with self.subTest(source="mower"):
+            game = self.make_game()
+            game.start_countdown_timer = 999
+            game.spawn_zombie(3, 0, accessory_key="cone")
+            zombie = game.zombies[0]
+            zombie.x = 70
+
+            with patch("pvz.random.random", return_value=0.0):
+                game._update_playing(1 / 30)
+                game._update_playing(1 / 30)
+
+            self.assertEqual([drop.accessory_key for drop in game.accessory_drops], ["cone"])
 
     def test_all_difficulties_complete_expected_wave_counts(self):
         for difficulty, config in pvz.DIFFICULTY_CONFIG.items():

@@ -490,6 +490,9 @@ class Plant:
         self.animation_state = "idle"
         self.animation_time = 0.0
         self.animation_return_state = None
+        self.accessory_key = None
+        self.accessory_hp = 0
+        self.max_accessory_hp = 0
 
     def play_animation(self, state, return_state=None, restart=False):
         if restart or state != self.animation_state:
@@ -498,13 +501,27 @@ class Plant:
             self.animation_return_state = return_state
 
     def take_damage(self, amount):
+        if self.accessory_hp > 0:
+            self.accessory_hp = max(0, self.accessory_hp - amount)
+            if self.accessory_hp <= 0:
+                self.accessory_key = None
+            return self.hp <= 0
         self.hp -= amount
         return self.hp <= 0
+
+    def equip_accessory(self, accessory_key):
+        if self.accessory_hp > 0 or accessory_key not in ACCESSORY_REGISTRY:
+            return False
+        accessory_data = ACCESSORY_REGISTRY[accessory_key]
+        self.accessory_key = accessory_key
+        self.accessory_hp = accessory_data["hp"]
+        self.max_accessory_hp = accessory_data["hp"]
+        return True
 
     def update(self, dt, game):
         pass
 
-    def draw(self, screen, image=None):
+    def draw(self, screen, image=None, accessory_image=None):
         x = self.col * CELL_SIZE
         y = STATUS_H + self.row * CELL_SIZE
         shadow = (
@@ -518,10 +535,12 @@ class Plant:
             y + CELL_SIZE - GROUND_SHADOW_BOTTOM_INSET,
             shadow,
         )
+        image_x = x
+        image_y = y
         if image is not None:
-            ix = x + (CELL_SIZE - image.get_width()) // 2
-            iy = y + (CELL_SIZE - image.get_height()) // 2
-            screen.blit(image, (ix, iy))
+            image_x = x + (CELL_SIZE - image.get_width()) // 2
+            image_y = y + (CELL_SIZE - image.get_height()) // 2
+            screen.blit(image, (image_x, image_y))
         else:
             pad = 5
             rect = pygame.Rect(x + pad, y + pad, CELL_SIZE - pad*2, CELL_SIZE - pad*2)
@@ -532,11 +551,19 @@ class Plant:
             tx = x + (CELL_SIZE - text.get_width()) // 2
             ty = y + (CELL_SIZE - text.get_height()) // 2 - 6
             screen.blit(text, (tx, ty))
-        if self.hp < self.max_hp:
+        if self.accessory_key is not None and accessory_image is not None:
+            offset = ACCESSORY_REGISTRY[self.accessory_key]["plant_offsets"].get(
+                self.asset_key,
+                (0, 0),
+            )
+            screen.blit(accessory_image, (image_x + offset[0], image_y + offset[1]))
+        if self.hp < self.max_hp or self.max_accessory_hp > 0:
             bw = CELL_SIZE - 14; bh = 6
             bx = x + 7; by = y + CELL_SIZE - 14
             pygame.draw.rect(screen, HP_BAR_BG, (bx, by, bw, bh))
-            r = max(0, self.hp / self.max_hp)
+            total_hp = max(0, self.hp) + max(0, self.accessory_hp)
+            max_total_hp = self.max_hp + self.max_accessory_hp
+            r = max(0, total_hp / max_total_hp)
             hc = HP_BAR_GREEN if r > 0.3 else HP_BAR_RED
             pygame.draw.rect(screen, hc, (bx, by, int(bw * r), bh))
 
@@ -703,6 +730,7 @@ class Zombie:
         self.asset_key = asset_key
         self.accessory_key = accessory_key
         self.accessory_asset_key = accessory_asset_key
+        self.drop_accessory_key = accessory_key
         self.x = float(GRID_W) - self.width
         self.hp = hp
         self.max_hp = hp
@@ -873,18 +901,56 @@ ACCESSORY_REGISTRY = {
     "cone": {
         "name": "Traffic Cone",
         "hp": ZOMBIE_CONEHEAD_ARMOR,
+        "drop_chance": 0.40,
         "asset_key": "cone_accessory",
         "max_size": (32, 36),
-        "offset": (3, -18),
+        "offset": (3, -15),
+        "plant_offsets": {
+            "sunflower": (8, -15),
+            "peashooter": (12, -20),
+            "wallnut": (13, -12),
+        },
     },
     "bucket": {
         "name": "Bucket",
         "hp": ZOMBIE_BUCKETHEAD_ARMOR,
+        "drop_chance": 0.15,
         "asset_key": "bucket_accessory",
         "max_size": (34, 30),
-        "offset": (2, -11),
+        "offset": (2, -9),
+        "plant_offsets": {
+            "sunflower": (8, -12),
+            "peashooter": (11, -16),
+            "wallnut": (13, -9),
+        },
     },
 }
+
+
+class AccessoryDrop:
+    def __init__(self, accessory_key, x, y):
+        self.accessory_key = accessory_key
+        self.x = int(x)
+        self.y = int(y)
+
+    def rect(self):
+        width, height = ACCESSORY_REGISTRY[self.accessory_key]["max_size"]
+        rect = pygame.Rect(0, 0, width, height)
+        rect.center = (self.x, self.y)
+        return rect.inflate(8, 8)
+
+    def contains(self, mx, my):
+        return self.rect().collidepoint(mx, my)
+
+    def draw(self, screen, image=None):
+        rect = self.rect()
+        pygame.draw.rect(screen, (255, 245, 180), rect, 2, border_radius=5)
+        if image is not None:
+            image_rect = image.get_rect(center=rect.center)
+            screen.blit(image, image_rect)
+            return
+        pygame.draw.rect(screen, (125, 105, 70), rect.inflate(-8, -8), border_radius=4)
+
 
 class Pea:
     def __init__(self, row, x, damage):
@@ -1279,14 +1345,20 @@ class Game:
                 continue
             zombie_image = self._fit_image(raw, ZOMBIE_IMAGE_MAX_W, ZOMBIE_IMAGE_MAX_H)
             accessory_image = None
+            player_accessory_image = None
             if key in accessory_sizes:
                 accessory_image = self._fit_image(raw, *accessory_sizes[key])
+                player_accessory_image = self._fit_image(
+                    pygame.transform.flip(raw, True, False),
+                    *accessory_sizes[key],
+                )
             images[key] = {
                 "grid": self._fit_image(raw, CELL_SIZE - 6, CELL_SIZE - 6),
                 "card": self._fit_image(raw, 42, 36),
                 "button": self._fit_image(raw, 44, 38),
                 "zombie": zombie_image,
                 "accessory": accessory_image,
+                "player_accessory": player_accessory_image,
                 "explosion": self._scaled_image(raw, (CELL_SIZE * 3, CELL_SIZE * 3)),
                 "sun": self._fit_image(raw, 48, 48),
                 "status": self._fit_image(raw, 30, 30),
@@ -1399,10 +1471,12 @@ class Game:
 
     def _reset_game(self):
         self.grid = [[None]*GRID_COLS for _ in range(GRID_ROWS)]
-        self.zombies = []; self.peas = []; self.suns = []
+        self.zombies = []; self.peas = []; self.suns = []; self.accessory_drops = []
         self.mowers = [LawnMower(row) for row in range(GRID_ROWS)]
         self.sun_count = SUN_INITIAL
         self.selected_card = None
+        self.selected_accessory = None
+        self.accessory_inventory = {key: 0 for key in ACCESSORY_REGISTRY}
         self.card_cooldowns = {
             key: float(data.get("initial_cooldown", 0.0))
             for key, data in PLANT_REGISTRY.items()
@@ -1442,6 +1516,46 @@ class Game:
 
     def add_pea(self, row, x, damage=PEA_DAMAGE):
         self.peas.append(Pea(row, x, damage))
+
+    def _accessory_inventory_rects(self):
+        slot_w = 72
+        slot_h = 42
+        start_x = 326
+        gap = 8
+        return {
+            key: pygame.Rect(start_x + index * (slot_w + gap), 9, slot_w, slot_h)
+            for index, key in enumerate(ACCESSORY_REGISTRY)
+        }
+
+    def _can_equip_accessory(self, plant):
+        return (
+            plant is not None
+            and not isinstance(plant, CherryBomb)
+            and plant.accessory_hp <= 0
+        )
+
+    def _try_drop_accessory(self, zombie):
+        accessory_key = zombie.drop_accessory_key
+        if accessory_key is None:
+            return
+        accessory_data = ACCESSORY_REGISTRY.get(accessory_key)
+        if accessory_data is None or random.random() >= accessory_data["drop_chance"]:
+            return
+        self.accessory_drops.append(AccessoryDrop(
+            accessory_key,
+            zombie.x + zombie.width / 2,
+            STATUS_H + zombie.row * CELL_SIZE + CELL_SIZE / 2,
+        ))
+
+    def _finalize_zombie_deaths(self):
+        survivors = []
+        for zombie in self.zombies:
+            if zombie.hp <= 0:
+                self._try_drop_accessory(zombie)
+                self.kills += 1
+            else:
+                survivors.append(zombie)
+        self.zombies = survivors
 
     def spawn_zombie(self, row, speed, zombie_key="normal", accessory_key=None):
         zombie_data = ZOMBIE_REGISTRY[zombie_key]
@@ -1592,16 +1706,34 @@ class Game:
 
     def handle_click(self, mx, my):
         if self.state != STATE_PLAYING: return True
+        # 1. Collect accessory drops before other lawn items.
+        for drop in self.accessory_drops[:]:
+            if drop.contains(mx, my):
+                self.accessory_inventory[drop.accessory_key] += 1
+                self.accessory_drops.remove(drop)
+                return True
+        # 2. Select a collected accessory from the status bar.
+        for accessory_key, rect in self._accessory_inventory_rects().items():
+            if rect.collidepoint(mx, my):
+                if self.accessory_inventory[accessory_key] <= 0:
+                    return True
+                self.selected_accessory = (
+                    None if self.selected_accessory == accessory_key else accessory_key
+                )
+                self.selected_card = None
+                self.shovel_selected = False
+                return True
         if self._shovel_rect().collidepoint(mx, my):
             self.shovel_selected = not self.shovel_selected
             if self.shovel_selected:
                 self.selected_card = None
+                self.selected_accessory = None
             return True
-        # 1. Collect sun
+        # 3. Collect sun
         for sun in self.suns:
             if sun.contains(mx, my):
                 self.sun_count += sun.value; sun.dead = True; return True
-        # 2. Card bar
+        # 4. Card bar
         if my > SCREEN_H - CARD_H:
             card_gap = 5
             card_w = (SCREEN_W - card_gap*(len(self.CARD_KEYS)+1))//len(self.CARD_KEYS)
@@ -1614,9 +1746,10 @@ class Game:
                         return True
                     self.selected_card = key if self.selected_card != key else None
                     self.shovel_selected = False
+                    self.selected_accessory = None
                     return True
             return False
-        # 3. Grid
+        # 5. Grid
         if STATUS_H <= my < STATUS_H + GRID_H:
             col = mx // CELL_SIZE; row = (my - STATUS_H)//CELL_SIZE
             if not (0<=col<GRID_COLS and 0<=row<GRID_ROWS): return False
@@ -1627,6 +1760,13 @@ class Game:
                     return True
                 return False
             if col in (HOUSE_COL, SPAWN_COL): return False
+            if self.selected_accessory is not None:
+                plant = self.grid[row][col]
+                if self._can_equip_accessory(plant):
+                    if plant.equip_accessory(self.selected_accessory):
+                        self.accessory_inventory[self.selected_accessory] -= 1
+                        self.selected_accessory = None
+                return True
             if self.selected_card is None: return False
             if self.grid[row][col] is not None:
                 self.selected_card = None; return True
@@ -1642,10 +1782,15 @@ class Game:
         return False
 
     def handle_right_click(self):
-        if self.state != STATE_PLAYING or (self.selected_card is None and not self.shovel_selected):
+        if self.state != STATE_PLAYING or (
+            self.selected_card is None
+            and not self.shovel_selected
+            and self.selected_accessory is None
+        ):
             return False
         self.selected_card = None
         self.shovel_selected = False
+        self.selected_accessory = None
         return True
 
     def _update_menu(self, dt):
@@ -1684,6 +1829,7 @@ class Game:
                         p.update(dt, self)
                         if self.grid[row][col] is p:
                             self._advance_animation(p, dt)
+        self._finalize_zombie_deaths()
         # Suns
         for s in self.suns[:]:
             s.update(dt)
@@ -1693,9 +1839,7 @@ class Game:
             pea.update(dt)
             if pea.x > GRID_W + 20: self.peas.remove(pea)
         # Zombies
-        for z in self.zombies[:]:
-            if z.hp <= 0:
-                self.zombies.remove(z); self.kills += 1; continue
+        for z in self.zombies:
             z.update(dt, self)
             self._advance_animation(z, dt)
         for mower in self.mowers:
@@ -1716,9 +1860,7 @@ class Game:
                 hit.append(pea)
         for p in hit:
             if p in self.peas: self.peas.remove(p)
-        killed = sum(1 for z in self.zombies if z.hp <= 0)
-        self.kills += killed
-        self.zombies = [z for z in self.zombies if z.hp > 0]
+        self._finalize_zombie_deaths()
 
     def _update_gameover(self, dt):
         pass
@@ -1915,6 +2057,22 @@ class Game:
         screen.blit(txt, (66, 19))
         txt = font.render(f"Kills: {self.kills}", True, TEXT_COLOR)
         screen.blit(txt, txt.get_rect(center=kill_panel.center))
+        inventory_font = pygame.font.Font(None, 22)
+        for accessory_key, rect in self._accessory_inventory_rects().items():
+            selected = self.selected_accessory == accessory_key
+            background = (105, 105, 90) if selected else panel_color
+            border = SELECT_BORDER if selected else panel_border
+            pygame.draw.rect(screen, background, rect, border_radius=7)
+            pygame.draw.rect(screen, border, rect, 2 if selected else 1, border_radius=7)
+            accessory_data = ACCESSORY_REGISTRY[accessory_key]
+            accessory_image = self.images.get(accessory_data["asset_key"], {}).get("player_accessory")
+            if accessory_image is not None:
+                image_rect = accessory_image.get_rect(center=(rect.x + 22, rect.centery))
+                screen.blit(accessory_image, image_rect)
+            else:
+                pygame.draw.circle(screen, (170, 145, 85), (rect.x + 22, rect.centery), 12)
+            count = inventory_font.render(str(self.accessory_inventory[accessory_key]), True, TEXT_COLOR)
+            screen.blit(count, count.get_rect(center=(rect.x + 53, rect.centery)))
         self._draw_wave_progress(screen, pygame.Rect(512, 23, 270, 14))
         shovel_rect = self._shovel_rect()
         shovel_bg = SHOVEL_ACTIVE_BG if self.shovel_selected else SHOVEL_BG
@@ -1957,7 +2115,11 @@ class Game:
                             p.asset_key, p.animation_state, p.animation_time
                         )
                         image = animation_image or self.images.get(p.asset_key, {}).get("grid")
-                        p.draw(screen, image)
+                        accessory_image = None
+                        if p.accessory_key is not None:
+                            accessory_asset_key = ACCESSORY_REGISTRY[p.accessory_key]["asset_key"]
+                            accessory_image = self.images.get(accessory_asset_key, {}).get("player_accessory")
+                        p.draw(screen, image, accessory_image)
         for z in self.zombies:
             animation_image = self._animation_image(
                 z.current_asset_key(), z.animation_state, z.animation_time
@@ -1979,6 +2141,9 @@ class Game:
             p.draw(screen, self.images, animation_image)
         for pea in self.peas: pea.draw(screen)
         for s in self.suns: s.draw(screen, self.images.get("sun", {}).get("sun"))
+        for drop in self.accessory_drops:
+            asset_key = ACCESSORY_REGISTRY[drop.accessory_key]["asset_key"]
+            drop.draw(screen, self.images.get(asset_key, {}).get("accessory"))
         # Card bar
         pygame.draw.rect(screen, CARD_BG, (0,SCREEN_H-CARD_H,SCREEN_W,CARD_H))
         pygame.draw.line(screen, (60,55,50), (0,SCREEN_H-CARD_H), (SCREEN_W,SCREEN_H-CARD_H), 2)
@@ -2039,6 +2204,10 @@ class Game:
             elif self.shovel_selected:
                 image = self.images.get("shovel", {}).get("button")
                 self._draw_follow_shadow(screen, image, (mx, my), SHOVEL_METAL, 1.75)
+            elif self.selected_accessory is not None:
+                asset_key = ACCESSORY_REGISTRY[self.selected_accessory]["asset_key"]
+                image = self.images.get(asset_key, {}).get("player_accessory")
+                self._draw_follow_shadow(screen, image, (mx, my), (170, 145, 85))
         self._draw_wave_alert(screen)
         if screen is not output_screen:
             output_screen.fill(BG_COLOR)
