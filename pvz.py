@@ -19,10 +19,16 @@ GRID_H = GRID_ROWS * CELL_SIZE
 SCREEN_W = GRID_W
 SCREEN_H = STATUS_H + GRID_H + CARD_H
 MAX_DT = 1.0 / 30.0
+GAME_SPEED_OPTIONS = (1.0, 1.25, 1.5, 2.0)
 CARD_SHAKE_DURATION = 0.2
 CARD_SHAKE_AMPLITUDE = 4
 WINDOW_LETTERBOX_COLOR = (18, 18, 18)
 HQ_RENDER_MIN_SCALE = 1.25
+
+
+def get_simulation_dt(frame_dt, speed_multiplier):
+    """Scale playing-state time while keeping large frame hitches safe."""
+    return min(max(0.0, frame_dt) * speed_multiplier, MAX_DT)
 
 
 def get_game_viewport(window_size):
@@ -297,6 +303,7 @@ ANIMATION_MANIFEST_PATH = os.path.join(ANIMATION_DIR, "manifest.json")
 ASSET_FILES = {
     "sunflower": "static/plants/sunflower_cut.png",
     "peashooter": "static/processed/plants/peashooter_right_cut.png",
+    "double_peashooter": "static/processed/plants/double_peashooter_right_cut.png",
     "wallnut": "static/plants/wallnut_cut.png",
     "cherry_bomb": "static/plants/cherry_bomb_cut.png",
     "cherry_bomb_warn": "static/plants/cherry_bomb_warn.png",
@@ -379,12 +386,14 @@ COST_CHERRY_BOMB = 150
 # Plant HP
 HP_SUNFLOWER = 100
 HP_PEASHOOTER = 100
+HP_DOUBLE_PEASHOOTER = 200
 HP_WALLNUT = 400
 HP_CHERRY_BOMB = 9999
 
 # Plant timings
 SUNFLOWER_INTERVAL = 12.0
 PEASHOOTER_INTERVAL = 1.5
+DOUBLE_PEASHOOTER_SECOND_SHOT_DELAY = 0.15
 COOLDOWN_SUNFLOWER = 7.5
 COOLDOWN_PEASHOOTER = 7.5
 COOLDOWN_WALLNUT = 30.0
@@ -592,6 +601,44 @@ class Peashooter(Plant):
                 px = (self.col + 1) * CELL_SIZE + 4
                 game.add_pea(self.row, px)
                 self.play_animation("shoot", return_state="idle", restart=True)
+
+
+class DoublePeashooter(Plant):
+    """A Peashooter fusion that fires a second pea shortly after the first."""
+
+    def __init__(self, row, col, hp=HP_DOUBLE_PEASHOOTER):
+        super().__init__(
+            row,
+            col,
+            HP_DOUBLE_PEASHOOTER,
+            COST_PEASHOOTER * 2,
+            PEASHOOTER_COLOR,
+            "D",
+            "double_peashooter",
+        )
+        self.hp = max(1, min(HP_DOUBLE_PEASHOOTER, hp))
+        self.shoot_timer = 0.0
+        self.second_shot_timer = None
+
+    def _add_pea(self, game):
+        px = (self.col + 1) * CELL_SIZE + 4
+        game.add_pea(self.row, px)
+
+    def update(self, dt, game):
+        self.shoot_timer += dt
+        if self.second_shot_timer is not None:
+            self.second_shot_timer -= dt
+            if self.second_shot_timer <= 0.000001:
+                self._add_pea(game)
+                self.second_shot_timer = None
+            return
+        if self.shoot_timer >= PEASHOOTER_INTERVAL:
+            self.shoot_timer = 0.0
+            if game.has_zombie_ahead(self.row, (self.col + 1) * CELL_SIZE):
+                self._add_pea(game)
+                self.second_shot_timer = DOUBLE_PEASHOOTER_SECOND_SHOT_DELAY
+                self.play_animation("shoot", return_state="idle", restart=True)
+
 
 class Wallnut(Plant):
     def __init__(self, row, col):
@@ -908,6 +955,7 @@ ACCESSORY_REGISTRY = {
         "plant_offsets": {
             "sunflower": (8, -15),
             "peashooter": (12, -20),
+            "double_peashooter": (24, -20),
             "wallnut": (13, -12),
         },
     },
@@ -921,6 +969,7 @@ ACCESSORY_REGISTRY = {
         "plant_offsets": {
             "sunflower": (8, -12),
             "peashooter": (11, -16),
+            "double_peashooter": (23, -16),
             "wallnut": (13, -9),
         },
     },
@@ -1103,6 +1152,7 @@ class Game:
         self.animations = self._load_animations()
         self.difficulty_key = "normal"
         self.difficulty_config = DIFFICULTY_CONFIG[self.difficulty_key]
+        self.game_speed_index = 0
         self.state = STATE_MENU
         self._reset_game()
 
@@ -1490,6 +1540,20 @@ class Game:
         self.shake_time = 0.0
         self.shake_intensity = 0
 
+    @property
+    def speed_multiplier(self):
+        return GAME_SPEED_OPTIONS[self.game_speed_index]
+
+    def _speed_rect(self):
+        return pygame.Rect(170, 9, 140, 42)
+
+    def _speed_label(self):
+        multiplier = self.speed_multiplier
+        return f"x{multiplier:.1f}" if multiplier.is_integer() else f"x{multiplier:g}"
+
+    def cycle_speed(self):
+        self.game_speed_index = (self.game_speed_index + 1) % len(GAME_SPEED_OPTIONS)
+
     def start_game(self, difficulty_key="normal"):
         self.difficulty_key = difficulty_key if difficulty_key in DIFFICULTY_CONFIG else "normal"
         self.difficulty_config = DIFFICULTY_CONFIG[self.difficulty_key]
@@ -1627,6 +1691,28 @@ class Game:
         plant_data = PLANT_REGISTRY[key]
         return self.sun_count >= plant_data["cost"] and self.card_cooldowns.get(key, 0.0) <= 0.0
 
+    def _combine_peashooters(self, row, col):
+        """Use the selected Peashooter card as the second fusion ingredient."""
+        source = self.grid[row][col]
+        if type(source) is not Peashooter or source.hp <= 0 or not self._card_ready("peashooter"):
+            return False
+
+        combined = DoublePeashooter(
+            row,
+            col,
+            min(HP_DOUBLE_PEASHOOTER, source.hp + HP_PEASHOOTER),
+        )
+        combined.accessory_key = source.accessory_key
+        combined.accessory_hp = source.accessory_hp
+        combined.max_accessory_hp = source.max_accessory_hp
+
+        plant_data = PLANT_REGISTRY["peashooter"]
+        self.sun_count -= plant_data["cost"]
+        self.card_cooldowns["peashooter"] = float(self._card_recharge_duration("peashooter"))
+        self.grid[row][col] = combined
+        self.selected_card = None
+        return True
+
     def _shake_card(self, key):
         self.card_shake[key] = CARD_SHAKE_DURATION
 
@@ -1706,6 +1792,9 @@ class Game:
 
     def handle_click(self, mx, my):
         if self.state != STATE_PLAYING: return True
+        if self._speed_rect().collidepoint(mx, my):
+            self.cycle_speed()
+            return True
         # 1. Collect accessory drops before other lawn items.
         for drop in self.accessory_drops[:]:
             if drop.contains(mx, my):
@@ -1769,6 +1858,8 @@ class Game:
                 return True
             if self.selected_card is None: return False
             if self.grid[row][col] is not None:
+                if self.selected_card == "peashooter" and self._combine_peashooters(row, col):
+                    return True
                 self.selected_card = None; return True
             plant_data = PLANT_REGISTRY.get(self.selected_card)
             if plant_data is None: return False
@@ -2042,8 +2133,8 @@ class Game:
         panel_color = (38, 38, 38)
         panel_border = (82, 82, 82)
         sun_panel = pygame.Rect(16, 9, 130, 42)
-        kill_panel = pygame.Rect(170, 9, 140, 42)
-        for panel in (sun_panel, kill_panel):
+        speed_panel = self._speed_rect()
+        for panel in (sun_panel, speed_panel):
             pygame.draw.rect(screen, panel_color, panel, border_radius=8)
             pygame.draw.rect(screen, panel_border, panel, 1, border_radius=8)
         status_sun = self.images.get("sun", {}).get("status")
@@ -2055,8 +2146,8 @@ class Game:
         font = pygame.font.Font(None, 28)
         txt = font.render(str(self.sun_count), True, TEXT_COLOR)
         screen.blit(txt, (66, 19))
-        txt = font.render(f"Kills: {self.kills}", True, TEXT_COLOR)
-        screen.blit(txt, txt.get_rect(center=kill_panel.center))
+        txt = font.render(self._speed_label(), True, TEXT_COLOR)
+        screen.blit(txt, txt.get_rect(center=speed_panel.center))
         inventory_font = pygame.font.Font(None, 22)
         for accessory_key, rect in self._accessory_inventory_rects().items():
             selected = self.selected_accessory == accessory_key
@@ -2251,7 +2342,8 @@ def main():
     game = Game()
     running = True
     while running:
-        dt = min(clock.tick(60) / 1000.0, MAX_DT)
+        frame_dt = clock.tick(60) / 1000.0
+        dt = min(frame_dt, MAX_DT)
         mouse_pressed = False
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT: running = False
@@ -2298,7 +2390,7 @@ def main():
                 game._update_menu(dt)
                 game._draw_difficulty_select(render_surface, mouse_pos, mouse_pressed)
             elif game.state == STATE_PLAYING:
-                game._update_playing(dt)
+                game._update_playing(get_simulation_dt(frame_dt, game.speed_multiplier))
                 game._draw_playing(render_surface, mouse_pos)
             elif game.state == STATE_PAUSED:
                 game._update_paused(dt)

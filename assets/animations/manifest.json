@@ -24,6 +24,28 @@
         }
       }
     },
+    "double_peashooter": {
+      "canvas": [557, 491],
+      "sequences": {
+        "idle": {
+          "loop": true,
+          "frames": [
+            { "file": "processed/double_peashooter/idle/000.png", "duration_ms": 850 },
+            { "file": "processed/double_peashooter/idle/001_breath.png", "duration_ms": 180 },
+            { "file": "processed/double_peashooter/idle/002_blink.png", "duration_ms": 150 }
+          ]
+        },
+        "shoot": {
+          "loop": false,
+          "frames": [
+            { "file": "processed/double_peashooter/shoot/001_windup.png", "duration_ms": 70 },
+            { "file": "processed/double_peashooter/shoot/000.png", "duration_ms": 80 },
+            { "file": "processed/double_peashooter/shoot/002_recoil.png", "duration_ms": 90 },
+            { "file": "processed/double_peashooter/shoot/001_recover.png", "duration_ms": 110 }
+          ]
+        }
+      }
+    },
     "zombie": {
       "canvas": [495, 1028],
       "sequences": {
@@ -58,8 +80,8 @@
         "idle": {
           "loop": true,
           "frames": [
-            { "file": "sunflower/idle/000.png", "duration_ms": 1125 },
-            { "file": "sunflower/idle/001_blink.png", "duration_ms": 150 }
+            { "file": "sunflower/idle/000.png", "duration_ms": 1800 },
+            { "file": "sunflower/idle/001_blink.png", "duration_ms": 260 }
           ]
         },
         "produce": {

@@ -33,6 +33,40 @@ class GameLogicTests(unittest.TestCase):
         game.start_game(difficulty)
         return game
 
+    def test_speed_panel_cycles_options_and_persists_across_restart(self):
+        game = self.make_game()
+        speed_panel = game._speed_rect()
+        self.assertEqual(game.speed_multiplier, 1.0)
+        self.assertEqual(game._speed_label(), "x1.0")
+
+        expected = ((1.25, "x1.25"), (1.5, "x1.5"), (2.0, "x2.0"), (1.0, "x1.0"))
+        for multiplier, label in expected:
+            self.assertTrue(game.handle_click(*speed_panel.center))
+            self.assertEqual(game.speed_multiplier, multiplier)
+            self.assertEqual(game._speed_label(), label)
+
+        game.cycle_speed()
+        game.cycle_speed()
+        game.cycle_speed()
+        self.assertEqual(game.speed_multiplier, 2.0)
+        game.restart_game()
+        self.assertEqual(game.speed_multiplier, 2.0)
+
+    def test_simulation_dt_scales_playing_time_and_caps_frame_hitches(self):
+        self.assertAlmostEqual(pvz.get_simulation_dt(1 / 60, 1.25), 1 / 48)
+        self.assertAlmostEqual(pvz.get_simulation_dt(1 / 60, 1.5), 1 / 40)
+        self.assertEqual(pvz.get_simulation_dt(1 / 60, 2.0), pvz.MAX_DT)
+        self.assertEqual(pvz.get_simulation_dt(1.0, 2.0), pvz.MAX_DT)
+        self.assertEqual(pvz.get_simulation_dt(-1.0, 2.0), 0.0)
+
+        game = self.make_game()
+        game.start_countdown_timer = 999
+        zombie = pvz.Zombie(0, speed=60)
+        zombie.x = 500
+        game.zombies = [zombie]
+        game._update_playing(pvz.get_simulation_dt(1 / 60, 2.0))
+        self.assertEqual(zombie.x, 498)
+
     def test_first_wave_starts_when_countdown_finishes(self):
         game = self.make_game()
 
@@ -120,7 +154,7 @@ class GameLogicTests(unittest.TestCase):
     def test_player_accessories_are_mirrored_and_have_individual_plant_offsets(self):
         loader = object.__new__(pvz.Game)
         loader.images = type(self).original_load_images(loader)
-        expected_plants = {"sunflower", "peashooter", "wallnut"}
+        expected_plants = {"sunflower", "peashooter", "double_peashooter", "wallnut"}
 
         for accessory_key, accessory_data in pvz.ACCESSORY_REGISTRY.items():
             with self.subTest(accessory=accessory_key):
@@ -364,6 +398,12 @@ class GameLogicTests(unittest.TestCase):
         loader.animations = animations
 
         self.assertEqual(len(animations["peashooter"]["shoot"]["frames"]), 4)
+        self.assertEqual(len(animations["double_peashooter"]["idle"]["frames"]), 3)
+        self.assertEqual(len(animations["double_peashooter"]["shoot"]["frames"]), 4)
+        self.assertEqual(
+            [frame["duration"] for frame in animations["sunflower"]["idle"]["frames"]],
+            [1.8, 0.26],
+        )
         self.assertEqual(len(animations["zombie"]["walk"]["frames"]), 4)
         self.assertEqual(len(animations["zombie"]["bite"]["frames"]), 3)
         self.assertIn("produce", animations["sunflower"])
@@ -373,6 +413,67 @@ class GameLogicTests(unittest.TestCase):
         self.assertIsInstance(
             loader._animation_image("peashooter", "shoot", 0.15), pygame.Surface
         )
+
+    def test_peashooter_card_combines_an_existing_peashooter(self):
+        game = self.make_game()
+        source = pvz.Peashooter(1, 3)
+        source.hp = 53
+        self.assertTrue(source.equip_accessory("cone"))
+        source.take_damage(17)
+        game.grid[1][3] = source
+        game.sun_count = pvz.COST_PEASHOOTER * 2
+        game.selected_card = "peashooter"
+        initial_sun = game.sun_count
+
+        self.assertTrue(
+            game.handle_click(
+                3 * pvz.CELL_SIZE + pvz.CELL_SIZE // 2,
+                pvz.STATUS_H + pvz.CELL_SIZE + pvz.CELL_SIZE // 2,
+            )
+        )
+
+        combined = game.grid[1][3]
+        self.assertIsInstance(combined, pvz.DoublePeashooter)
+        self.assertEqual(combined.max_hp, pvz.HP_DOUBLE_PEASHOOTER)
+        self.assertEqual(combined.hp, 153)
+        self.assertEqual(combined.accessory_key, "cone")
+        self.assertEqual(combined.accessory_hp, pvz.ZOMBIE_CONEHEAD_ARMOR - 17)
+        self.assertEqual(combined.max_accessory_hp, pvz.ZOMBIE_CONEHEAD_ARMOR)
+        self.assertEqual(game.sun_count, initial_sun - pvz.COST_PEASHOOTER)
+        self.assertEqual(game.card_cooldowns["peashooter"], pvz.COOLDOWN_PEASHOOTER)
+        self.assertIsNone(game.selected_card)
+        self.assertNotIn("double_peashooter", game.CARD_KEYS)
+
+        game.selected_card = "peashooter"
+        self.assertTrue(
+            game.handle_click(
+                3 * pvz.CELL_SIZE + pvz.CELL_SIZE // 2,
+                pvz.STATUS_H + pvz.CELL_SIZE + pvz.CELL_SIZE // 2,
+            )
+        )
+        self.assertIs(game.grid[1][3], combined)
+        self.assertEqual(game.sun_count, initial_sun - pvz.COST_PEASHOOTER)
+        self.assertIsNone(game.selected_card)
+
+    def test_double_peashooter_fires_second_pea_after_short_delay(self):
+        game = self.make_game()
+        double_peashooter = pvz.DoublePeashooter(0, 1)
+        double_peashooter.shoot_timer = pvz.PEASHOOTER_INTERVAL
+        target = pvz.Zombie(0, speed=0)
+        target.x = 500
+        game.zombies = [target]
+
+        double_peashooter.update(0.0, game)
+        self.assertEqual(len(game.peas), 1)
+        self.assertEqual(double_peashooter.animation_state, "shoot")
+        self.assertEqual(double_peashooter.second_shot_timer, pvz.DOUBLE_PEASHOOTER_SECOND_SHOT_DELAY)
+
+        game.zombies.clear()
+        double_peashooter.update(pvz.DOUBLE_PEASHOOTER_SECOND_SHOT_DELAY - 0.01, game)
+        self.assertEqual(len(game.peas), 1)
+        double_peashooter.update(0.01, game)
+        self.assertEqual(len(game.peas), 2)
+        self.assertIsNone(double_peashooter.second_shot_timer)
 
     def test_animation_frames_keep_consistent_size_and_bottom_anchor(self):
         loader = object.__new__(pvz.Game)
