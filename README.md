@@ -42,6 +42,8 @@ python -m pip install pygame
 python pvz.py
 ```
 
+在 Windows 上，也可以直接双击项目根目录的 `启动游戏.bat` 启动游戏。启动失败时，窗口会保留错误信息；请先按上方命令安装 Python 或 Pygame 后再重试。
+
 ## Automated regression tests
 
 The tests run Pygame with the dummy SDL driver and do not open a game window:
