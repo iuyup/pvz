@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "format": "png",
+  "anchor": "bottom_center",
+  "notes": "Generated-frame candidates were chroma-keyed to alpha and normalized to the matching state reference canvas. pvz.py loads these sequences and advances them using duration_ms.",
+  "characters": {
+    "peashooter": {
+      "canvas": [671, 894],
+      "sequences": {
+        "idle": {
+          "loop": true,
+          "frames": [
+            { "file": "processed/peashooter/idle/000.png", "duration_ms": 1250 }
+          ]
+        },
+        "shoot": {
+          "loop": false,
+          "frames": [
+            { "file": "processed/peashooter/shoot/000.png", "duration_ms": 90 },
+            { "file": "processed/peashooter/shoot/001_windup.png", "duration_ms": 100 },
+            { "file": "processed/peashooter/shoot/002_fire.png", "duration_ms": 90 },
+            { "file": "processed/peashooter/shoot/003_recover.png", "duration_ms": 170 }
+          ]
+        }
+      }
+    },
+    "zombie": {
+      "canvas": [495, 1028],
+      "sequences": {
+        "idle": {
+          "loop": true,
+          "frames": [
+            { "file": "processed/zombie/idle/000.png", "duration_ms": 1250 }
+          ]
+        },
+        "walk": {
+          "loop": true,
+          "frames": [
+            { "file": "processed/zombie/walk/000_contact_a.png", "duration_ms": 250 },
+            { "file": "processed/zombie/walk/001_passing_a.png", "duration_ms": 250 },
+            { "file": "processed/zombie/walk/002_contact_b.png", "duration_ms": 250 },
+            { "file": "processed/zombie/walk/003_passing_b.png", "duration_ms": 250 }
+          ]
+        },
+        "bite": {
+          "loop": true,
+          "frames": [
+            { "file": "processed/zombie/bite/000_open.png", "duration_ms": 275 },
+            { "file": "processed/zombie/bite/001_half.png", "duration_ms": 225 },
+            { "file": "processed/zombie/bite/002_close.png", "duration_ms": 350 }
+          ]
+        }
+      }
+    },
+    "sunflower": {
+      "canvas": [637, 907],
+      "sequences": {
+        "idle": {
+          "loop": true,
+          "frames": [
+            { "file": "sunflower/idle/000.png", "duration_ms": 1125 },
+            { "file": "sunflower/idle/001_blink.png", "duration_ms": 150 }
+          ]
+        },
+        "produce": {
+          "loop": false,
+          "frames": [
+            { "file": "sunflower/produce/000.png", "duration_ms": 275 },
+            { "file": "sunflower/produce/001_anticipate.png", "duration_ms": 225 }
+          ]
+        }
+      }
+    },
+    "wallnut": {
+      "canvas": [736, 950],
+      "sequences": {
+        "idle": {
+          "loop": true,
+          "frames": [
+            { "file": "wallnut/idle/000.png", "duration_ms": 1250 }
+          ]
+        },
+        "hit": {
+          "loop": false,
+          "frames": [
+            { "file": "wallnut/hit/000_squint.png", "duration_ms": 110 },
+            { "file": "wallnut/hit/001_recover.png", "duration_ms": 190 }
+          ]
+        }
+      }
+    },
+    "cherry_bomb": {
+      "canvas": [775, 805],
+      "sequences": {
+        "idle": {
+          "loop": true,
+          "frames": [
+            { "file": "cherry_bomb/idle/000.png", "duration_ms": 950 },
+            { "file": "cherry_bomb/idle/001_fuse_flicker.png", "duration_ms": 150 }
+          ]
+        },
+        "warn": {
+          "canvas": [983, 933],
+          "loop": true,
+          "frames": [
+            { "file": "cherry_bomb/warn/000.png", "duration_ms": 225 },
+            { "file": "cherry_bomb/warn/001_pulse.png", "duration_ms": 225 },
+            { "file": "cherry_bomb/warn/002_preburst.png", "duration_ms": 300 }
+          ]
+        },
+        "explode": {
+          "canvas": [1000, 891],
+          "loop": false,
+          "frames": [
+            { "file": "cherry_bomb/explode/000.png", "duration_ms": 225 }
+          ]
+        }
+      }
+    }
+  }
+}

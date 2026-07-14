@@ -3,6 +3,7 @@ import random
 import sys
 import os
 import math
+import json
 
 # ============ CONSTANTS ============
 CELL_SIZE = 80
@@ -54,20 +55,22 @@ STATE_LOSE = "lose"
 
 # 资源文件
 ASSET_DIR = os.path.join(os.path.dirname(__file__), "assets")
+ANIMATION_DIR = os.path.join(ASSET_DIR, "animations")
+ANIMATION_MANIFEST_PATH = os.path.join(ANIMATION_DIR, "manifest.json")
 ASSET_FILES = {
-    "sunflower": "sunflower_cut.png",
-    "peashooter": "peashooter_right_cut.png",
-    "wallnut": "wallnut_cut.png",
-    "cherry_bomb": "cherry_bomb_cut.png",
-    "cherry_bomb_warn": "cherry_bomb_warn.png",
-    "explosion": "explosion.png",
-    "zombie": "zombie_cut.png",
-    "cone_accessory": "cone_accessory.png",
-    "bucket_accessory": "bucket_accessory.png",
-    "shovel": "shovel_cut.png",
-    "sun": "sun_cut.png",
-    "lawn_checker": "lawn_checker_mild.png",
-    "lawn_mower": "lawn_mower.png",
+    "sunflower": "static/plants/sunflower_cut.png",
+    "peashooter": "static/processed/plants/peashooter_right_cut.png",
+    "wallnut": "static/plants/wallnut_cut.png",
+    "cherry_bomb": "static/plants/cherry_bomb_cut.png",
+    "cherry_bomb_warn": "static/plants/cherry_bomb_warn.png",
+    "explosion": "static/effects/explosion.png",
+    "zombie": "static/processed/zombies/zombie_cut.png",
+    "cone_accessory": "static/zombies/cone_accessory.png",
+    "bucket_accessory": "static/zombies/bucket_accessory.png",
+    "shovel": "static/items/shovel_cut.png",
+    "sun": "static/items/sun_cut.png",
+    "lawn_checker": "static/board/lawn_checker_mild.png",
+    "lawn_mower": "static/board/lawn_mower.png",
 }
 FLIPPED_ASSETS = {"wallnut"}
 
@@ -90,6 +93,11 @@ PEA_COLOR = (50, 230, 50)
 SUN_COLOR = (255, 245, 60)
 TEXT_COLOR = (255, 255, 255)
 SHADOW_COLOR = (0, 0, 0)
+PLANT_GROUND_SHADOW_SIZE = (58, 12)
+SUNFLOWER_GROUND_SHADOW_SIZE = (46, 10)
+ZOMBIE_GROUND_SHADOW_SIZE = (39, 8)
+GROUND_SHADOW_ALPHA = 64
+GROUND_SHADOW_BOTTOM_INSET = 4
 MOWER_BODY = (205, 40, 32)
 MOWER_BODY_DARK = (125, 24, 22)
 MOWER_METAL = (205, 210, 205)
@@ -106,6 +114,24 @@ SHOVEL_BG = (75, 75, 75)
 SHOVEL_ACTIVE_BG = (120, 120, 120)
 SHOVEL_METAL = (210, 210, 210)
 SHOVEL_HANDLE = (120, 75, 35)
+
+
+def make_ground_shadow(size):
+    shadow = pygame.Surface(size, pygame.SRCALPHA)
+    pygame.draw.ellipse(shadow, (0, 0, 0, GROUND_SHADOW_ALPHA), shadow.get_rect())
+    return shadow
+
+
+PLANT_GROUND_SHADOW = make_ground_shadow(PLANT_GROUND_SHADOW_SIZE)
+SUNFLOWER_GROUND_SHADOW = make_ground_shadow(SUNFLOWER_GROUND_SHADOW_SIZE)
+ZOMBIE_GROUND_SHADOW = make_ground_shadow(ZOMBIE_GROUND_SHADOW_SIZE)
+
+
+def draw_ground_shadow(screen, center_x, ground_y, shadow):
+    shadow_x = round(center_x - shadow.get_width() / 2)
+    shadow_y = ground_y - shadow.get_height()
+    screen.blit(shadow, (shadow_x, shadow_y))
+
 
 # Plant costs
 COST_SUNFLOWER = 50
@@ -224,6 +250,15 @@ class Plant:
         self.color = color
         self.letter = letter
         self.asset_key = asset_key
+        self.animation_state = "idle"
+        self.animation_time = 0.0
+        self.animation_return_state = None
+
+    def play_animation(self, state, return_state=None, restart=False):
+        if restart or state != self.animation_state:
+            self.animation_state = state
+            self.animation_time = 0.0
+            self.animation_return_state = return_state
 
     def take_damage(self, amount):
         self.hp -= amount
@@ -235,6 +270,17 @@ class Plant:
     def draw(self, screen, image=None):
         x = self.col * CELL_SIZE
         y = STATUS_H + self.row * CELL_SIZE
+        shadow = (
+            SUNFLOWER_GROUND_SHADOW
+            if self.asset_key == "sunflower"
+            else PLANT_GROUND_SHADOW
+        )
+        draw_ground_shadow(
+            screen,
+            x + CELL_SIZE // 2,
+            y + CELL_SIZE - GROUND_SHADOW_BOTTOM_INSET,
+            shadow,
+        )
         if image is not None:
             ix = x + (CELL_SIZE - image.get_width()) // 2
             iy = y + (CELL_SIZE - image.get_height()) // 2
@@ -268,6 +314,7 @@ class Sunflower(Plant):
             sx = self.col * CELL_SIZE + CELL_SIZE//2 + random.randint(-15, 15)
             sy = STATUS_H + self.row * CELL_SIZE + CELL_SIZE//2 + random.randint(-15, 15)
             game.add_sun(sx, sy, SUN_VALUE, source="sunflower")
+            self.play_animation("produce", return_state="idle", restart=True)
 
 class Peashooter(Plant):
     def __init__(self, row, col):
@@ -280,10 +327,16 @@ class Peashooter(Plant):
             if game.has_zombie_ahead(self.row, (self.col + 1) * CELL_SIZE):
                 px = (self.col + 1) * CELL_SIZE + 4
                 game.add_pea(self.row, px)
+                self.play_animation("shoot", return_state="idle", restart=True)
 
 class Wallnut(Plant):
     def __init__(self, row, col):
         super().__init__(row, col, HP_WALLNUT, COST_WALLNUT, WALLNUT_COLOR, "W", "wallnut")
+
+    def take_damage(self, amount):
+        dead = super().take_damage(amount)
+        self.play_animation("hit", return_state="idle", restart=True)
+        return dead
 
 class CherryBomb(Plant):
     def __init__(self, row, col):
@@ -299,6 +352,7 @@ class CherryBomb(Plant):
             if self.state == "idle":
                 self.state = "warning"
                 self.state_timer = CHERRY_BOMB_WARNING_TIME - overflow
+                self.play_animation("warn")
             elif self.state == "warning":
                 self._enter_exploding(game)
                 self.state_timer = CHERRY_BOMB_EXPLODING_TIME - overflow
@@ -313,6 +367,7 @@ class CherryBomb(Plant):
 
     def _enter_exploding(self, game):
         self.state = "exploding"
+        self.play_animation("explode")
         if self._damage_dealt:
             return
         self._damage_dealt = True
@@ -332,13 +387,15 @@ class CherryBomb(Plant):
                 zombie.accessory_asset_key = None
                 zombie.hp = 0
 
-    def draw(self, screen, images=None):
+    def draw(self, screen, images=None, animation_image=None):
         center = (
             self.col * CELL_SIZE + CELL_SIZE // 2,
             STATUS_H + self.row * CELL_SIZE + CELL_SIZE // 2,
         )
         if self.state == "exploding":
-            image = None if images is None else images.get("explosion", {}).get("explosion")
+            image = animation_image
+            if image is None and images is not None:
+                image = images.get("explosion", {}).get("explosion")
             if image is not None:
                 screen.blit(image, (center[0] - image.get_width() // 2, center[1] - image.get_height() // 2))
             else:
@@ -348,7 +405,9 @@ class CherryBomb(Plant):
                 pygame.draw.ellipse(screen, (255, 235, 80), rect.inflate(-60, -60))
             return
         image_key = "cherry_bomb_warn" if self.state == "warning" else "cherry_bomb"
-        image = None if images is None else images.get(image_key, {}).get("grid")
+        image = animation_image
+        if image is None and images is not None:
+            image = images.get(image_key, {}).get("grid")
         super().draw(screen, image)
 
 # 植物注册表
@@ -415,6 +474,15 @@ class Zombie:
         self.max_total_hp = hp + accessory_hp
         self.speed = speed
         self.attack_timer = 0.0
+        self.animation_state = "walk"
+        self.animation_time = 0.0
+        self.animation_return_state = None
+
+    def play_animation(self, state, return_state=None, restart=False):
+        if restart or state != self.animation_state:
+            self.animation_state = state
+            self.animation_time = 0.0
+            self.animation_return_state = return_state
     def take_damage(self, amount):
         if self.accessory_hp > 0:
             self.accessory_hp = max(0, self.accessory_hp - amount)
@@ -435,6 +503,7 @@ class Zombie:
     def update(self, dt, game):
         blocker = self._get_blocker(game)
         if blocker is not None:
+            self.play_animation("bite")
             self.attack_timer += dt
             if self.attack_timer >= ZOMBIE_ATTACK_CD:
                 self.attack_timer = 0.0
@@ -442,12 +511,19 @@ class Zombie:
                 if dead:
                     game.remove_plant(blocker.row, blocker.col)
         else:
+            self.play_animation("walk")
             self.attack_timer = 0.0
             self.x -= self.speed * dt
             if self.x <= -self.width:
                 game.trigger_lost()
     def draw(self, screen, image=None):
         y = STATUS_H + self.row * CELL_SIZE + (CELL_SIZE-self.height)//2
+        draw_ground_shadow(
+            screen,
+            int(self.x) + self.width // 2,
+            STATUS_H + self.row * CELL_SIZE + CELL_SIZE - GROUND_SHADOW_BOTTOM_INSET,
+            ZOMBIE_GROUND_SHADOW,
+        )
         if image is not None:
             ix = int(self.x) + (self.width - image.get_width()) // 2
             iy = STATUS_H + self.row * CELL_SIZE + (CELL_SIZE - image.get_height()) // 2
@@ -718,6 +794,7 @@ class Game:
     CARD_KEYS = tuple(PLANT_REGISTRY.keys())
     def __init__(self):
         self.images = self._load_images()
+        self.animations = self._load_animations()
         self.difficulty_key = "normal"
         self.difficulty_config = DIFFICULTY_CONFIG[self.difficulty_key]
         self.state = STATE_MENU
@@ -728,6 +805,51 @@ class Game:
         scale = min(max_width / width, max_height / height)
         size = (max(1, int(width * scale)), max(1, int(height * scale)))
         return pygame.transform.smoothscale(image, size)
+
+    def _normalize_animation_frames(self, asset_key, sequences):
+        """Give one character a stable visual size and bottom-center anchor."""
+        variants = getattr(self, "images", {}).get(asset_key, {})
+        reference = variants.get("zombie" if asset_key == "zombie" else "grid")
+        if reference is None:
+            return
+
+        reference_bounds = reference.get_bounding_rect(min_alpha=32)
+        if reference_bounds.width <= 0 or reference_bounds.height <= 0:
+            return
+
+        frames_and_bounds = []
+        for state, sequence in sequences.items():
+            # Explosion deliberately occupies a 3x3 area and must retain its own scale.
+            if asset_key == "cherry_bomb" and state == "explode":
+                continue
+            for frame in sequence["frames"]:
+                bounds = frame["image"].get_bounding_rect(min_alpha=32)
+                if bounds.width > 0 and bounds.height > 0:
+                    frames_and_bounds.append((frame, bounds))
+        if not frames_and_bounds:
+            return
+
+        canvas_width, canvas_height = reference.get_size()
+        max_height_that_fits = min(
+            canvas_width * bounds.height / bounds.width
+            for _, bounds in frames_and_bounds
+        )
+        target_height = max(
+            1,
+            min(reference_bounds.height, int(max_height_that_fits)),
+        )
+        bottom_padding = canvas_height - reference_bounds.bottom
+
+        for frame, bounds in frames_and_bounds:
+            cropped = frame["image"].subsurface(bounds).copy()
+            target_width = max(1, round(bounds.width * target_height / bounds.height))
+            target_width = min(canvas_width, target_width)
+            normalized = pygame.Surface((canvas_width, canvas_height), pygame.SRCALPHA)
+            scaled = pygame.transform.smoothscale(cropped, (target_width, target_height))
+            x = (canvas_width - target_width) // 2
+            y = max(0, canvas_height - bottom_padding - target_height)
+            normalized.blit(scaled, (x, y))
+            frame["image"] = normalized
 
     def _trim_alpha(self, image):
         bbox = image.get_bounding_rect(min_alpha=8)
@@ -844,6 +966,106 @@ class Game:
                 "status": self._fit_image(raw, 30, 30),
             }
         return images
+
+    def _load_animations(self):
+        animations = {}
+        try:
+            with open(ANIMATION_MANIFEST_PATH, "r", encoding="utf-8") as manifest_file:
+                manifest = json.load(manifest_file)
+        except (OSError, json.JSONDecodeError):
+            return animations
+
+        if not isinstance(manifest, dict):
+            return animations
+
+        characters = manifest.get("characters", {})
+        if not isinstance(characters, dict):
+            return animations
+
+        for asset_key, character_data in characters.items():
+            if not isinstance(character_data, dict):
+                continue
+            sequences = character_data.get("sequences", {})
+            if not isinstance(sequences, dict):
+                continue
+            loaded_sequences = {}
+            for state, sequence_data in sequences.items():
+                if not isinstance(sequence_data, dict):
+                    continue
+                loaded_frames = []
+                for frame_data in sequence_data.get("frames", []):
+                    if not isinstance(frame_data, dict):
+                        continue
+                    relative_path = frame_data.get("file")
+                    if not relative_path:
+                        continue
+                    path = os.path.join(ANIMATION_DIR, relative_path)
+                    if not os.path.exists(path):
+                        continue
+                    try:
+                        raw = pygame.image.load(path).convert_alpha()
+                    except pygame.error:
+                        continue
+                    if asset_key in FLIPPED_ASSETS:
+                        raw = pygame.transform.flip(raw, True, False)
+                    if asset_key == "zombie":
+                        image = self._fit_image(raw, ZOMBIE_IMAGE_MAX_W, ZOMBIE_IMAGE_MAX_H)
+                    elif asset_key == "cherry_bomb" and state == "explode":
+                        image = pygame.transform.smoothscale(raw, (CELL_SIZE * 3, CELL_SIZE * 3))
+                    else:
+                        image = self._fit_image(raw, CELL_SIZE - 6, CELL_SIZE - 6)
+                    try:
+                        duration = max(0.001, float(frame_data.get("duration_ms", 100)) / 1000.0)
+                    except (TypeError, ValueError):
+                        duration = 0.1
+                    loaded_frames.append({"duration": duration, "image": image})
+                if loaded_frames:
+                    loaded_sequences[state] = {
+                        "loop": bool(sequence_data.get("loop", False)),
+                        "duration": sum(frame["duration"] for frame in loaded_frames),
+                        "frames": loaded_frames,
+                    }
+            if loaded_sequences:
+                self._normalize_animation_frames(asset_key, loaded_sequences)
+                animations[asset_key] = loaded_sequences
+        return animations
+
+    def _animation_sequence(self, asset_key, state):
+        return self.animations.get(asset_key, {}).get(state)
+
+    def _animation_image(self, asset_key, state, elapsed):
+        sequence = self._animation_sequence(asset_key, state)
+        if sequence is None:
+            return None
+        total_duration = sequence["duration"]
+        if total_duration <= 0:
+            return None
+        elapsed = max(0.0, elapsed)
+        if sequence["loop"]:
+            elapsed %= total_duration
+        else:
+            elapsed = min(elapsed, max(0.0, total_duration - 0.000001))
+        for frame in sequence["frames"]:
+            if elapsed < frame["duration"]:
+                return frame["image"]
+            elapsed -= frame["duration"]
+        return sequence["frames"][-1]["image"]
+
+    def _advance_animation(self, entity, dt):
+        sequence = self._animation_sequence(entity.asset_key, entity.animation_state)
+        if sequence is None:
+            return
+        total_duration = sequence["duration"]
+        if total_duration <= 0:
+            return
+        entity.animation_time += max(0.0, dt)
+        if sequence["loop"]:
+            entity.animation_time %= total_duration
+        elif entity.animation_time >= total_duration:
+            if entity.animation_return_state is not None:
+                entity.play_animation(entity.animation_return_state)
+            else:
+                entity.animation_time = max(0.0, total_duration - 0.000001)
 
     def reset(self):
         self.state = STATE_MENU
@@ -1130,8 +1352,12 @@ class Game:
             for col in range(GRID_COLS):
                 p = self.grid[row][col]
                 if p is not None:
-                    if p.hp <= 0: self.remove_plant(row, col)
-                    else: p.update(dt, self)
+                    if p.hp <= 0:
+                        self.remove_plant(row, col)
+                    else:
+                        p.update(dt, self)
+                        if self.grid[row][col] is p:
+                            self._advance_animation(p, dt)
         # Suns
         for s in self.suns[:]:
             s.update(dt)
@@ -1145,6 +1371,7 @@ class Game:
             if z.hp <= 0:
                 self.zombies.remove(z); self.kills += 1; continue
             z.update(dt, self)
+            self._advance_animation(z, dt)
         for mower in self.mowers:
             mower.update(dt, self)
         # Pea-Zombie collision
@@ -1391,11 +1618,21 @@ class Game:
                         if p.state == "exploding":
                             exploding_plants.append(p)
                         else:
-                            p.draw(screen, self.images)
+                            animation_image = self._animation_image(
+                                p.asset_key, p.animation_state, p.animation_time
+                            )
+                            p.draw(screen, self.images, animation_image)
                     else:
-                        p.draw(screen, self.images.get(p.asset_key, {}).get("grid"))
+                        animation_image = self._animation_image(
+                            p.asset_key, p.animation_state, p.animation_time
+                        )
+                        image = animation_image or self.images.get(p.asset_key, {}).get("grid")
+                        p.draw(screen, image)
         for z in self.zombies:
-            base_image = self.images.get(z.current_asset_key(), {}).get("zombie")
+            animation_image = self._animation_image(
+                z.current_asset_key(), z.animation_state, z.animation_time
+            )
+            base_image = animation_image or self.images.get(z.current_asset_key(), {}).get("zombie")
             z.draw(screen, base_image)
             accessory_asset_key = z.current_accessory_asset_key()
             if accessory_asset_key is not None and z.accessory_key is not None:
@@ -1405,7 +1642,11 @@ class Game:
                 z.draw_health(screen)
         for mower in self.mowers:
             mower.draw(screen, self.images.get("lawn_mower", {}).get("mower"))
-        for p in exploding_plants: p.draw(screen, self.images)
+        for p in exploding_plants:
+            animation_image = self._animation_image(
+                p.asset_key, p.animation_state, p.animation_time
+            )
+            p.draw(screen, self.images, animation_image)
         for pea in self.peas: pea.draw(screen)
         for s in self.suns: s.draw(screen, self.images.get("sun", {}).get("sun"))
         # Card bar

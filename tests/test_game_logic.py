@@ -17,11 +17,14 @@ class GameLogicTests(unittest.TestCase):
         pygame.init()
         pygame.display.set_mode((1, 1))
         cls.original_load_images = pvz.Game._load_images
+        cls.original_load_animations = pvz.Game._load_animations
         pvz.Game._load_images = lambda self: {}
+        pvz.Game._load_animations = lambda self: {}
 
     @classmethod
     def tearDownClass(cls):
         pvz.Game._load_images = cls.original_load_images
+        pvz.Game._load_animations = cls.original_load_animations
         pygame.quit()
 
     def make_game(self, difficulty="normal"):
@@ -166,6 +169,132 @@ class GameLogicTests(unittest.TestCase):
                 self.assertEqual(game.state, pvz.STATE_WIN)
                 self.assertEqual(spawned_total, expected_total)
 
+    def test_animation_manifest_loads_expected_sequences(self):
+        loader = object.__new__(pvz.Game)
+        loader.images = type(self).original_load_images(loader)
+        animations = type(self).original_load_animations(loader)
+        loader.animations = animations
+
+        self.assertEqual(len(animations["peashooter"]["shoot"]["frames"]), 4)
+        self.assertEqual(len(animations["zombie"]["walk"]["frames"]), 4)
+        self.assertEqual(len(animations["zombie"]["bite"]["frames"]), 3)
+        self.assertIn("produce", animations["sunflower"])
+        self.assertIn("hit", animations["wallnut"])
+        self.assertIn("warn", animations["cherry_bomb"])
+        self.assertTrue(animations["cherry_bomb"]["warn"]["loop"])
+        self.assertIsInstance(
+            loader._animation_image("peashooter", "shoot", 0.15), pygame.Surface
+        )
+
+    def test_animation_frames_keep_consistent_size_and_bottom_anchor(self):
+        loader = object.__new__(pvz.Game)
+        loader.images = type(self).original_load_images(loader)
+        animations = type(self).original_load_animations(loader)
+
+        for asset_key, sequences in animations.items():
+            frames = [
+                frame["image"]
+                for state, sequence in sequences.items()
+                if not (asset_key == "cherry_bomb" and state == "explode")
+                for frame in sequence["frames"]
+            ]
+            with self.subTest(asset_key=asset_key):
+                sizes = {image.get_size() for image in frames}
+                bounds = [image.get_bounding_rect(min_alpha=32) for image in frames]
+                visible_heights = [bound.height for bound in bounds]
+                bottom_offsets = [image.get_height() - bound.bottom for image, bound in zip(frames, bounds)]
+
+                self.assertEqual(len(sizes), 1)
+                self.assertLessEqual(max(visible_heights) - min(visible_heights), 1)
+                self.assertLessEqual(max(bottom_offsets) - min(bottom_offsets), 1)
+
+    def test_animation_events_preserve_existing_gameplay_timing(self):
+        def sequence(loop):
+            return {
+                "loop": loop,
+                "duration": 0.1,
+                "frames": [{"duration": 0.1, "image": pygame.Surface((1, 1), pygame.SRCALPHA)}],
+            }
+
+        game = self.make_game()
+        game.start_countdown_timer = 999
+        game.animations = {
+            "peashooter": {"idle": sequence(True), "shoot": sequence(False)},
+            "sunflower": {"idle": sequence(True), "produce": sequence(False)},
+            "wallnut": {"idle": sequence(True), "hit": sequence(False)},
+            "cherry_bomb": {"idle": sequence(True), "warn": sequence(False), "explode": sequence(False)},
+            "zombie": {"walk": sequence(True), "bite": sequence(True)},
+        }
+
+        peashooter = pvz.Peashooter(0, 1)
+        peashooter.shoot_timer = pvz.PEASHOOTER_INTERVAL
+        game.grid[0][1] = peashooter
+        target = pvz.Zombie(0, speed=0)
+        target.x = 500
+        game.zombies = [target]
+
+        game._update_playing(0)
+
+        self.assertEqual(len(game.peas), 1)
+        self.assertEqual(peashooter.animation_state, "shoot")
+        game._advance_animation(peashooter, 0.1)
+        self.assertEqual(peashooter.animation_state, "idle")
+
+        sunflower = pvz.Sunflower(1, 1)
+        sunflower.sun_timer = pvz.SUNFLOWER_INTERVAL
+        game.grid[1][1] = sunflower
+        game._update_playing(0)
+        self.assertEqual(sunflower.animation_state, "produce")
+        game._advance_animation(sunflower, 0.1)
+        self.assertEqual(sunflower.animation_state, "idle")
+
+        wallnut = pvz.Wallnut(0, 3)
+        game.grid[0][3] = wallnut
+        wallnut.take_damage(1)
+        self.assertEqual(wallnut.hp, pvz.HP_WALLNUT - 1)
+        self.assertEqual(wallnut.animation_state, "hit")
+
+        target.x = 300
+        target.update(0, game)
+        self.assertEqual(target.animation_state, "bite")
+
+        cherry_bomb = pvz.CherryBomb(4, 8)
+        cherry_bomb.update(pvz.CHERRY_BOMB_IDLE_TIME, game)
+        self.assertEqual(cherry_bomb.animation_state, "warn")
+        cherry_bomb.update(pvz.CHERRY_BOMB_WARNING_TIME, game)
+        self.assertEqual(cherry_bomb.animation_state, "explode")
+
+    def test_ground_shadow_sizes_and_entity_draw_paths(self):
+        self.assertEqual(pvz.PLANT_GROUND_SHADOW.get_size(), (58, 12))
+        self.assertEqual(pvz.SUNFLOWER_GROUND_SHADOW.get_size(), (46, 10))
+        self.assertEqual(pvz.ZOMBIE_GROUND_SHADOW.get_size(), (39, 8))
+
+        screen = pygame.Surface((pvz.SCREEN_W, pvz.SCREEN_H))
+        transparent_image = pygame.Surface((1, 1), pygame.SRCALPHA)
+        calls = []
+        original_draw_ground_shadow = pvz.draw_ground_shadow
+        pvz.draw_ground_shadow = lambda surface, center_x, ground_y, shadow: calls.append(
+            (center_x, ground_y, shadow.get_size())
+        )
+        try:
+            sunflower = pvz.Sunflower(1, 2)
+            sunflower.draw(screen, transparent_image)
+            peashooter = pvz.Peashooter(2, 4)
+            peashooter.draw(screen, transparent_image)
+            zombie = pvz.Zombie(3, speed=0)
+            zombie.x = 300
+            zombie.draw(screen, transparent_image)
+        finally:
+            pvz.draw_ground_shadow = original_draw_ground_shadow
+
+        self.assertEqual(
+            calls,
+            [
+                (2 * pvz.CELL_SIZE + pvz.CELL_SIZE // 2, pvz.STATUS_H + 2 * pvz.CELL_SIZE - 4, (46, 10)),
+                (4 * pvz.CELL_SIZE + pvz.CELL_SIZE // 2, pvz.STATUS_H + 3 * pvz.CELL_SIZE - 4, (58, 12)),
+                (300 + pvz.ZOMBIE_WIDTH // 2, pvz.STATUS_H + 4 * pvz.CELL_SIZE - 4, (39, 8)),
+            ],
+        )
 
 if __name__ == "__main__":
     unittest.main()
