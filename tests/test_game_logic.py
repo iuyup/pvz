@@ -53,6 +53,69 @@ class GameLogicTests(unittest.TestCase):
         )
         self.assertIsNone(pvz.window_to_game_pos((viewport.x - 1, viewport.y), viewport))
 
+    def test_high_quality_renderer_uses_viewport_resolution_and_raw_assets(self):
+        viewport = pvz.get_game_viewport((1920, 1080))
+        self.assertEqual(viewport.size, (1760, 1080))
+        self.assertTrue(pvz.should_use_high_quality_rendering(viewport))
+
+        loader = object.__new__(pvz.Game)
+        loader.images = type(self).original_load_images(loader)
+        logical_image = loader.images["peashooter"]["grid"]
+        render_surface = pvz.HighResolutionSurface(
+            pygame.Surface(viewport.size),
+            (pvz.SCREEN_W, pvz.SCREEN_H),
+            loader._high_resolution_image,
+        )
+        physical_image = loader._high_resolution_image(
+            logical_image,
+            render_surface.scale_x,
+            render_surface.scale_y,
+        )
+
+        self.assertEqual(
+            physical_image.get_size(),
+            (logical_image.get_width() * 2, logical_image.get_height() * 2),
+        )
+        self.assertEqual(render_surface.surface.get_size(), viewport.size)
+
+    def test_high_quality_drawing_preserves_logical_text_layout(self):
+        render_surface = pvz.HighResolutionSurface(
+            pygame.Surface((1760, 1080)),
+            (pvz.SCREEN_W, pvz.SCREEN_H),
+        )
+
+        with pvz.HighResolutionDrawingContext(render_surface):
+            pygame.draw.rect(render_surface, (20, 40, 60), (10, 15, 30, 20))
+            font = pygame.font.Font(None, 28)
+            text = font.render("HQ", True, (255, 255, 255))
+            self.assertIsInstance(text, pvz.HighResolutionImage)
+            self.assertLess(text.get_width(), text.surface.get_width())
+            render_surface.blit(text, text.get_rect(center=(100, 100)))
+
+        self.assertEqual(render_surface.surface.get_at((21, 31))[:3], (20, 40, 60))
+
+    def test_high_quality_mapping_rejects_temporary_cooldown_surface(self):
+        loader = object.__new__(pvz.Game)
+        loader.images = type(self).original_load_images(loader)
+        loader.animations = type(self).original_load_animations(loader)
+        warning_image = loader.animations["cherry_bomb"]["warn"]["frames"][0]["image"]
+        warning_source = loader._high_resolution_sources[id(warning_image)]
+        cooldown_overlay = pygame.Surface((211, 40), pygame.SRCALPHA)
+        collision_key = id(cooldown_overlay)
+        previous_source = loader._high_resolution_sources.get(collision_key)
+        loader._high_resolution_sources[collision_key] = warning_source
+        try:
+            self.assertIsNone(loader._high_resolution_image(cooldown_overlay, 2, 2))
+        finally:
+            if previous_source is None:
+                loader._high_resolution_sources.pop(collision_key, None)
+            else:
+                loader._high_resolution_sources[collision_key] = previous_source
+
+        self.assertTrue(
+            all("logical_image" in source for source in loader._high_resolution_sources.values())
+        )
+
     def test_zombie_only_blocks_on_contacted_forward_plant(self):
         game = self.make_game()
         game.grid[2][3] = pvz.Wallnut(2, 3)

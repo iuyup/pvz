@@ -4,6 +4,7 @@ import sys
 import os
 import math
 import json
+from contextlib import nullcontext
 
 # ============ CONSTANTS ============
 CELL_SIZE = 80
@@ -21,6 +22,7 @@ MAX_DT = 1.0 / 30.0
 CARD_SHAKE_DURATION = 0.2
 CARD_SHAKE_AMPLITUDE = 4
 WINDOW_LETTERBOX_COLOR = (18, 18, 18)
+HQ_RENDER_MIN_SCALE = 1.25
 
 
 def get_game_viewport(window_size):
@@ -44,6 +46,241 @@ def window_to_game_pos(window_pos, viewport):
     x = (window_pos[0] - viewport.x) * SCREEN_W // viewport.width
     y = (window_pos[1] - viewport.y) * SCREEN_H // viewport.height
     return min(SCREEN_W - 1, x), min(SCREEN_H - 1, y)
+
+
+def should_use_high_quality_rendering(viewport):
+    """Use a native-resolution renderer only when the logical game is enlarged."""
+    return min(viewport.width / SCREEN_W, viewport.height / SCREEN_H) >= HQ_RENDER_MIN_SCALE
+
+
+class HighResolutionImage:
+    """A physical image that still reports logical dimensions to existing draw code."""
+
+    def __init__(self, surface, logical_size):
+        self.surface = surface
+        self.logical_size = logical_size
+
+    def get_width(self):
+        return self.logical_size[0]
+
+    def get_height(self):
+        return self.logical_size[1]
+
+    def get_size(self):
+        return self.logical_size
+
+    def get_rect(self, **kwargs):
+        rect = pygame.Rect(0, 0, *self.logical_size)
+        for attribute, value in kwargs.items():
+            setattr(rect, attribute, value)
+        return rect
+
+
+class HighResolutionSurface:
+    """Scale logical coordinates while drawing directly to a viewport-sized surface."""
+
+    def __init__(self, surface, logical_size, image_provider=None):
+        self.surface = surface
+        self.logical_size = logical_size
+        self.scale_x = surface.get_width() / logical_size[0]
+        self.scale_y = surface.get_height() / logical_size[1]
+        self.image_provider = image_provider
+
+    def scale_x_value(self, value):
+        return round(value * self.scale_x)
+
+    def scale_y_value(self, value):
+        return round(value * self.scale_y)
+
+    def scale_length(self, value):
+        if value == 0:
+            return 0
+        return max(1, round(value * (self.scale_x + self.scale_y) / 2))
+
+    def scale_rect(self, rect):
+        rect = pygame.Rect(rect)
+        return pygame.Rect(
+            self.scale_x_value(rect.x),
+            self.scale_y_value(rect.y),
+            self.scale_x_value(rect.width),
+            self.scale_y_value(rect.height),
+        )
+
+    def scale_point(self, point):
+        return self.scale_x_value(point[0]), self.scale_y_value(point[1])
+
+    def fill(self, color, rect=None, special_flags=0):
+        physical_rect = None if rect is None else self.scale_rect(rect)
+        return self.surface.fill(color, physical_rect, special_flags)
+
+    def _scaled_generic_image(self, image):
+        size = (
+            max(1, self.scale_x_value(image.get_width())),
+            max(1, self.scale_y_value(image.get_height())),
+        )
+        return pygame.transform.smoothscale(image, size)
+
+    def blit(self, source, dest, area=None, special_flags=0):
+        if isinstance(source, HighResolutionSurface):
+            physical_source = source.surface
+        elif isinstance(source, HighResolutionImage):
+            physical_source = source.surface
+        elif self.image_provider is not None:
+            physical_source = self.image_provider(source, self.scale_x, self.scale_y)
+            if physical_source is None:
+                physical_source = self._scaled_generic_image(source)
+        else:
+            physical_source = self._scaled_generic_image(source)
+
+        if isinstance(dest, pygame.Rect):
+            position = dest.topleft
+        else:
+            position = dest[:2]
+        physical_dest = self.scale_point(position)
+        physical_area = None if area is None else self.scale_rect(area)
+        return self.surface.blit(physical_source, physical_dest, physical_area, special_flags)
+
+    def make_layer(self):
+        layer = pygame.Surface(self.surface.get_size()).convert()
+        return HighResolutionSurface(layer, self.logical_size, self.image_provider)
+
+
+class HighResolutionDrawingContext:
+    """Temporarily route pygame primitives and fonts through HighResolutionSurface."""
+
+    def __init__(self, render_surface):
+        self.render_surface = render_surface
+
+    def _target(self, surface):
+        if isinstance(surface, HighResolutionSurface):
+            return surface.surface, surface
+        return surface, None
+
+    def _rect(self, surface, color, rect, width=0, border_radius=0,
+              border_top_left_radius=0, border_top_right_radius=0,
+              border_bottom_left_radius=0, border_bottom_right_radius=0):
+        target, renderer = self._target(surface)
+        if renderer is None:
+            return self._draw_rect(
+                target, color, rect, width, border_radius,
+                border_top_left_radius, border_top_right_radius,
+                border_bottom_left_radius, border_bottom_right_radius,
+            )
+        return self._draw_rect(
+            target,
+            color,
+            renderer.scale_rect(rect),
+            renderer.scale_length(width),
+            renderer.scale_length(border_radius),
+            renderer.scale_length(border_top_left_radius),
+            renderer.scale_length(border_top_right_radius),
+            renderer.scale_length(border_bottom_left_radius),
+            renderer.scale_length(border_bottom_right_radius),
+        )
+
+    def _ellipse(self, surface, color, rect, width=0):
+        target, renderer = self._target(surface)
+        if renderer is None:
+            return self._draw_ellipse(target, color, rect, width)
+        return self._draw_ellipse(
+            target, color, renderer.scale_rect(rect), renderer.scale_length(width)
+        )
+
+    def _line(self, surface, color, start_pos, end_pos, width=1):
+        target, renderer = self._target(surface)
+        if renderer is None:
+            return self._draw_line(target, color, start_pos, end_pos, width)
+        return self._draw_line(
+            target,
+            color,
+            renderer.scale_point(start_pos),
+            renderer.scale_point(end_pos),
+            renderer.scale_length(width),
+        )
+
+    def _polygon(self, surface, color, points, width=0):
+        target, renderer = self._target(surface)
+        if renderer is None:
+            return self._draw_polygon(target, color, points, width)
+        return self._draw_polygon(
+            target,
+            color,
+            [renderer.scale_point(point) for point in points],
+            renderer.scale_length(width),
+        )
+
+    def _circle(self, surface, color, center, radius, width=0,
+                draw_top_right=False, draw_top_left=False,
+                draw_bottom_left=False, draw_bottom_right=False):
+        target, renderer = self._target(surface)
+        if renderer is None:
+            return self._draw_circle(
+                target, color, center, radius, width,
+                draw_top_right, draw_top_left, draw_bottom_left, draw_bottom_right,
+            )
+        return self._draw_circle(
+            target,
+            color,
+            renderer.scale_point(center),
+            renderer.scale_length(radius),
+            renderer.scale_length(width),
+            draw_top_right,
+            draw_top_left,
+            draw_bottom_left,
+            draw_bottom_right,
+        )
+
+    def _font(self, filename, size):
+        return HighResolutionFont(
+            self._font_factory(filename, size),
+            self._font_factory(filename, max(1, round(size * self.render_surface.scale_y))),
+            self.render_surface,
+        )
+
+    def __enter__(self):
+        self._draw_rect = pygame.draw.rect
+        self._draw_ellipse = pygame.draw.ellipse
+        self._draw_line = pygame.draw.line
+        self._draw_polygon = pygame.draw.polygon
+        self._draw_circle = pygame.draw.circle
+        self._font_factory = pygame.font.Font
+        pygame.draw.rect = self._rect
+        pygame.draw.ellipse = self._ellipse
+        pygame.draw.line = self._line
+        pygame.draw.polygon = self._polygon
+        pygame.draw.circle = self._circle
+        pygame.font.Font = self._font
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pygame.draw.rect = self._draw_rect
+        pygame.draw.ellipse = self._draw_ellipse
+        pygame.draw.line = self._draw_line
+        pygame.draw.polygon = self._draw_polygon
+        pygame.draw.circle = self._draw_circle
+        pygame.font.Font = self._font_factory
+
+
+class HighResolutionFont:
+    def __init__(self, logical_font, physical_font, render_surface):
+        self.logical_font = logical_font
+        self.physical_font = physical_font
+        self.render_surface = render_surface
+
+    def render(self, text, antialias, color, background=None):
+        if background is None:
+            logical_image = self.logical_font.render(text, antialias, color)
+            physical_image = self.physical_font.render(text, antialias, color)
+        else:
+            logical_image = self.logical_font.render(text, antialias, color, background)
+            physical_image = self.physical_font.render(text, antialias, color, background)
+        target_size = (
+            max(1, self.render_surface.scale_x_value(logical_image.get_width())),
+            max(1, self.render_surface.scale_y_value(logical_image.get_height())),
+        )
+        if physical_image.get_size() != target_size:
+            physical_image = pygame.transform.smoothscale(physical_image, target_size)
+        return HighResolutionImage(physical_image, logical_image.get_size())
 
 # 游戏状态
 STATE_MENU = "menu"
@@ -793,6 +1030,9 @@ class WaveManager:
 class Game:
     CARD_KEYS = tuple(PLANT_REGISTRY.keys())
     def __init__(self):
+        self._high_resolution_sources = {}
+        self._high_resolution_cache = {}
+        self._high_resolution_cache_scale = None
         self.images = self._load_images()
         self.animations = self._load_animations()
         self.difficulty_key = "normal"
@@ -800,11 +1040,85 @@ class Game:
         self.state = STATE_MENU
         self._reset_game()
 
+    def _ensure_high_resolution_cache(self):
+        if not hasattr(self, "_high_resolution_sources"):
+            self._high_resolution_sources = {}
+        if not hasattr(self, "_high_resolution_cache"):
+            self._high_resolution_cache = {}
+        if not hasattr(self, "_high_resolution_cache_scale"):
+            self._high_resolution_cache_scale = None
+
+    def _register_high_resolution_source(self, logical_image, raw_image):
+        self._ensure_high_resolution_cache()
+        self._high_resolution_sources[id(logical_image)] = {
+            "logical_image": logical_image,
+            "kind": "scaled",
+            "raw_image": raw_image,
+        }
+
+    def _register_normalized_high_resolution_source(
+        self, logical_image, raw_image, target_size, offset
+    ):
+        self._ensure_high_resolution_cache()
+        self._high_resolution_sources[id(logical_image)] = {
+            "logical_image": logical_image,
+            "kind": "normalized",
+            "raw_image": raw_image,
+            "target_size": target_size,
+            "offset": offset,
+        }
+
+    def _scaled_image(self, image, size):
+        scaled = pygame.transform.smoothscale(image, size)
+        self._register_high_resolution_source(scaled, image)
+        return scaled
+
+    def _prepare_high_resolution_cache(self, scale_x, scale_y):
+        self._ensure_high_resolution_cache()
+        scale_key = (round(scale_x, 4), round(scale_y, 4))
+        if scale_key != self._high_resolution_cache_scale:
+            self._high_resolution_cache.clear()
+            self._high_resolution_cache_scale = scale_key
+
+    def _high_resolution_image(self, logical_image, scale_x, scale_y):
+        self._prepare_high_resolution_cache(scale_x, scale_y)
+        source = self._high_resolution_sources.get(id(logical_image))
+        if source is None or source["logical_image"] is not logical_image:
+            return None
+
+        cache_key = id(logical_image)
+        cached = self._high_resolution_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        target_size = (
+            max(1, round(logical_image.get_width() * scale_x)),
+            max(1, round(logical_image.get_height() * scale_y)),
+        )
+        if source["kind"] == "scaled":
+            rendered = pygame.transform.smoothscale(source["raw_image"], target_size)
+        else:
+            rendered = pygame.Surface(target_size, pygame.SRCALPHA)
+            content_size = (
+                max(1, round(source["target_size"][0] * scale_x)),
+                max(1, round(source["target_size"][1] * scale_y)),
+            )
+            content = pygame.transform.smoothscale(source["raw_image"], content_size)
+            rendered.blit(
+                content,
+                (
+                    round(source["offset"][0] * scale_x),
+                    round(source["offset"][1] * scale_y),
+                ),
+            )
+        self._high_resolution_cache[cache_key] = rendered
+        return rendered
+
     def _fit_image(self, image, max_width, max_height):
         width, height = image.get_size()
         scale = min(max_width / width, max_height / height)
         size = (max(1, int(width * scale)), max(1, int(height * scale)))
-        return pygame.transform.smoothscale(image, size)
+        return self._scaled_image(image, size)
 
     def _normalize_animation_frames(self, asset_key, sequences):
         """Give one character a stable visual size and bottom-center anchor."""
@@ -841,6 +1155,7 @@ class Game:
         bottom_padding = canvas_height - reference_bounds.bottom
 
         for frame, bounds in frames_and_bounds:
+            high_resolution_source = self._high_resolution_sources.get(id(frame["image"]))
             cropped = frame["image"].subsurface(bounds).copy()
             target_width = max(1, round(bounds.width * target_height / bounds.height))
             target_width = min(canvas_width, target_width)
@@ -849,6 +1164,17 @@ class Game:
             x = (canvas_width - target_width) // 2
             y = max(0, canvas_height - bottom_padding - target_height)
             normalized.blit(scaled, (x, y))
+            if high_resolution_source is not None:
+                raw_image = high_resolution_source["raw_image"]
+                raw_bounds = raw_image.get_bounding_rect(min_alpha=32)
+                if raw_bounds.width > 0 and raw_bounds.height > 0:
+                    raw_image = raw_image.subsurface(raw_bounds).copy()
+                    self._register_normalized_high_resolution_source(
+                        normalized,
+                        raw_image,
+                        (target_width, target_height),
+                        (x, y),
+                    )
             frame["image"] = normalized
 
     def _trim_alpha(self, image):
@@ -943,7 +1269,7 @@ class Game:
         for key, raw in raw_images.items():
             if key == "lawn_checker":
                 images[key] = {
-                    "lawn": pygame.transform.smoothscale(raw, (GRID_W, GRID_H)),
+                    "lawn": self._scaled_image(raw, (GRID_W, GRID_H)),
                 }
                 continue
             if key == "lawn_mower":
@@ -961,7 +1287,7 @@ class Game:
                 "button": self._fit_image(raw, 44, 38),
                 "zombie": zombie_image,
                 "accessory": accessory_image,
-                "explosion": pygame.transform.smoothscale(raw, (CELL_SIZE * 3, CELL_SIZE * 3)),
+                "explosion": self._scaled_image(raw, (CELL_SIZE * 3, CELL_SIZE * 3)),
                 "sun": self._fit_image(raw, 48, 48),
                 "status": self._fit_image(raw, 30, 30),
             }
@@ -1011,7 +1337,7 @@ class Game:
                     if asset_key == "zombie":
                         image = self._fit_image(raw, ZOMBIE_IMAGE_MAX_W, ZOMBIE_IMAGE_MAX_H)
                     elif asset_key == "cherry_bomb" and state == "explode":
-                        image = pygame.transform.smoothscale(raw, (CELL_SIZE * 3, CELL_SIZE * 3))
+                        image = self._scaled_image(raw, (CELL_SIZE * 3, CELL_SIZE * 3))
                     else:
                         image = self._fit_image(raw, CELL_SIZE - 6, CELL_SIZE - 6)
                     try:
@@ -1544,7 +1870,11 @@ class Game:
                 random.randint(-shake_amount, shake_amount),
                 random.randint(-shake_amount, shake_amount),
             )
-            screen = pygame.Surface((SCREEN_W, SCREEN_H))
+            screen = (
+                screen.make_layer()
+                if isinstance(screen, HighResolutionSurface)
+                else pygame.Surface((SCREEN_W, SCREEN_H))
+            )
         else:
             shake_offset = (0, 0)
         screen.fill(BG_COLOR)
@@ -1747,7 +2077,7 @@ def main():
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.RESIZABLE)
     pygame.display.set_caption("Plants vs Zombies - Simplified")
-    game_surface = pygame.Surface((SCREEN_W, SCREEN_H)).convert()
+    logical_surface = pygame.Surface((SCREEN_W, SCREEN_H)).convert()
     clock = pygame.time.Clock()
     game = Game()
     running = True
@@ -1779,26 +2109,41 @@ def main():
                     game.handle_right_click()
         viewport = get_game_viewport(screen.get_size())
         mouse_pos = window_to_game_pos(pygame.mouse.get_pos(), viewport) or (-1, -1)
-        if game.state == STATE_MENU:
-            game._update_menu(dt)
-            game._draw_menu(game_surface, mouse_pos, mouse_pressed)
-        elif game.state == STATE_DIFFICULTY_SELECT:
-            game._update_menu(dt)
-            game._draw_difficulty_select(game_surface, mouse_pos, mouse_pressed)
-        elif game.state == STATE_PLAYING:
-            game._update_playing(dt)
-            game._draw_playing(game_surface, mouse_pos)
-        elif game.state == STATE_PAUSED:
-            game._update_paused(dt)
-            game._draw_paused(game_surface, mouse_pos, mouse_pressed)
-        elif game.state in (STATE_WIN, STATE_LOSE):
-            game._update_gameover(dt)
-            game._draw_gameover(game_surface, mouse_pos, mouse_pressed)
-        screen.fill(WINDOW_LETTERBOX_COLOR)
-        if viewport.size == (SCREEN_W, SCREEN_H):
-            screen.blit(game_surface, viewport.topleft)
+        high_quality_rendering = should_use_high_quality_rendering(viewport)
+        if high_quality_rendering:
+            render_surface = HighResolutionSurface(
+                pygame.Surface(viewport.size).convert(),
+                (SCREEN_W, SCREEN_H),
+                game._high_resolution_image,
+            )
+            drawing_context = HighResolutionDrawingContext(render_surface)
         else:
-            scaled_surface = pygame.transform.smoothscale(game_surface, viewport.size)
+            render_surface = logical_surface
+            drawing_context = nullcontext()
+
+        with drawing_context:
+            if game.state == STATE_MENU:
+                game._update_menu(dt)
+                game._draw_menu(render_surface, mouse_pos, mouse_pressed)
+            elif game.state == STATE_DIFFICULTY_SELECT:
+                game._update_menu(dt)
+                game._draw_difficulty_select(render_surface, mouse_pos, mouse_pressed)
+            elif game.state == STATE_PLAYING:
+                game._update_playing(dt)
+                game._draw_playing(render_surface, mouse_pos)
+            elif game.state == STATE_PAUSED:
+                game._update_paused(dt)
+                game._draw_paused(render_surface, mouse_pos, mouse_pressed)
+            elif game.state in (STATE_WIN, STATE_LOSE):
+                game._update_gameover(dt)
+                game._draw_gameover(render_surface, mouse_pos, mouse_pressed)
+        screen.fill(WINDOW_LETTERBOX_COLOR)
+        if high_quality_rendering:
+            screen.blit(render_surface.surface, viewport.topleft)
+        elif viewport.size == (SCREEN_W, SCREEN_H):
+            screen.blit(render_surface, viewport.topleft)
+        else:
+            scaled_surface = pygame.transform.smoothscale(render_surface, viewport.size)
             screen.blit(scaled_surface, viewport.topleft)
         pygame.display.flip()
     pygame.quit()
